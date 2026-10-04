@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+.DS_Store
+*.app/
+*.zip
+*.dSYM/
+.env
+.env.*
+settings.json
+auth.json
+*.sqlite
+*.sqlite-*
+*.jsonl
+live-*.json
+token-crosscheck*.json
+work/

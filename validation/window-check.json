@@ -1,0 +1,20 @@
+{
+  "checks" : {
+    "backgroundRendersAtHalfOpacity" : true,
+    "disablingCollapseRestoresWindow" : true,
+    "dragAwayUndocks" : true,
+    "floatingWindowLevel" : true,
+    "foregroundStaysOpaque" : true,
+    "hideWindow" : true,
+    "hoverRestoresFullWidth" : true,
+    "leavingCollapsesAgain" : true,
+    "leftEdgeCollapsed" : true,
+    "normalWindowLevel" : true,
+    "rightEdgeCollapsed" : true,
+    "settingsWindowOpens" : true,
+    "showWindow" : true,
+    "transparencySettingApplied" : true
+  },
+  "renderedBackgroundAlpha" : 0.50196078431372548,
+  "renderedForegroundMaxAlpha" : 0.92549019607843142
+}
