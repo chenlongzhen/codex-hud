@@ -34,6 +34,16 @@ The downloadable build is for **Apple Silicon**. It uses a local ad-hoc signatur
 
 The source targets **macOS 13+** and requires **Swift 6**. Actual testing was on macOS 26.2, Apple Silicon, Swift 6.0.3 and Codex CLI 0.160.0. Other OS versions and Intel builds have not been tested.
 
+### First launch: allow this app
+
+If macOS says the developer cannot be verified or Apple cannot check the app for malicious software, you can usually allow this copy manually after confirming it came from this repository's Releases page:
+
+1. Try opening **Codex HUD.app** once so macOS shows the blocked-app notice.
+2. Go to **System Settings → Privacy & Security**, scroll to the security section, and select **Open Anyway** for Codex HUD.
+3. Confirm **Open** in the next dialog, completing any authentication macOS requests.
+
+macOS saves an exception for this app, so subsequent launches normally work by double-clicking it. This is an app-specific exception; no global Gatekeeper change is needed. See [Apple's official instructions](https://support.apple.com/102445). Managed Macs may restrict this option. These steps address an unidentified-developer or missing-notarization notice, not a warning that the app is damaged or contains known malware.
+
 ### Build from source
 
 Install Xcode or Command Line Tools with a Swift 6 toolchain, then:
