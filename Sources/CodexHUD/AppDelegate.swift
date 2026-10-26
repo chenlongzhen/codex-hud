@@ -10,6 +10,7 @@ final class HUDPanel: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let store = HUDStore(settings: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--check-window") ? .init() : .load())
+    let loginItem = LoginItem(isPreview: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--check-window"))
     private var panel: HUDPanel!
     private var hosting: NSHostingView<HUDView>!
     private var statusItem: NSStatusItem!
@@ -70,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
     func applicationWillTerminate(_ notification: Notification) { dockingWork?.cancel(); collapseWork?.cancel(); store.stop() }
+    func applicationDidBecomeActive(_ notification: Notification) { loginItem.refresh() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { revealDock(); panel.orderFrontRegardless(); return true }
     func windowDidMove(_ notification: Notification) {
         guard notification.object as? NSWindow === panel, !resizing, !store.edgeCollapsed else { return }
@@ -195,7 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 508, height: 380), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Codex HUD 设置"; window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentView = NSHostingView(rootView: SettingsView(store: store, value: store.settings, done: { [weak self, weak window] in
+        loginItem.refresh()
+        window.contentView = NSHostingView(rootView: SettingsView(store: store, loginItem: loginItem, value: store.settings, done: { [weak self, weak window] in
             window?.close(); self?.settingsWindow = nil
         }))
         if let content = window.contentView { window.setContentSize(content.fittingSize) }

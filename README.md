@@ -30,7 +30,9 @@ The HUD does not require a separate API key or access browser cookies. It does n
 3. Move **Codex HUD.app** to Applications if desired, then open it. The HUD finds a supported installed Codex CLI and uses its existing login.
 4. Wait for the first local scan. On the development machine the complete initial snapshot took roughly ten seconds; large histories can take longer.
 
-The downloadable build is for **Apple Silicon**. It uses a local ad-hoc signature and is **not notarized**; macOS may block a downloaded copy. Building locally is an alternative. No automatic updater or login item is installed.
+The downloadable build is for **Apple Silicon**. It uses a local ad-hoc signature and is **not notarized**; macOS may block a downloaded copy. Building locally is an alternative. No automatic updater is installed. Launch at login is opt-in and disabled by default.
+
+Enable “登录时自动启动” in Settings to launch the HUD when you sign in to your Mac. Place the app in its permanent location before enabling it. The toggle reflects macOS login-item status; if approval is needed, use the button to open System Settings. Disable the toggle to remove the login item.
 
 The source targets **macOS 13+** and requires **Swift 6**. Actual testing was on macOS 26.2, Apple Silicon, Swift 6.0.3 and Codex CLI 0.160.0. Other OS versions and Intel builds have not been tested.
 

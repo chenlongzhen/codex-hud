@@ -295,12 +295,26 @@ struct HUDView: View {
 
 struct SettingsView: View {
     @ObservedObject var store: HUDStore
+    @ObservedObject var loginItem: LoginItem
     @State var value: HUDConfiguration
     @State private var error: String?
     var done: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Codex HUD 设置").font(.title3.weight(.semibold))
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("登录时自动启动", isOn: Binding(get: { loginItem.isEnabled }, set: { loginItem.setEnabled($0) }))
+                    .disabled(loginItem.isPreview)
+                Text(loginItem.statusText).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if loginItem.status == .requiresApproval {
+                    Button("打开系统登录项设置") { loginItem.openSystemSettings() }
+                }
+                if let error = loginItem.error {
+                    Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Divider()
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("背景透明度")
