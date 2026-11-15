@@ -1,7 +1,23 @@
 import Foundation
 import Darwin
 
-public enum ClaudeWriteResult: String { case written, throttled, lockBusy, clockSkew, refused }
+public enum ClaudeWriteResult: String { case written, throttled, lockBusy, clockSkew, refused, cancelled }
+
+/// Revocable authority for one asynchronous probe write. The gate spans only rename, never
+/// flock, encoding or fsync. invalidate() returning is the lifecycle linearization point:
+/// either a rename completed before it, or the old request can no longer commit (F2).
+public final class ClaudeCommitPermit: @unchecked Sendable {
+    private let gate = NSLock()
+    private var valid = true
+    public init() {}
+    public func invalidate() { gate.lock(); valid = false; gate.unlock() }
+    public var isValid: Bool { gate.lock(); defer { gate.unlock() }; return valid }
+    fileprivate func commit(_ replace: () -> Bool) -> Bool? {
+        gate.lock(); defer { gate.unlock() }
+        guard valid else { return nil }
+        return replace()
+    }
+}
 
 /// All business-data IO is relative to verified, no-follow directory descriptors.
 /// Same-UID malicious mutation of private directories is outside the threat model.
@@ -40,7 +56,7 @@ public enum ClaudeSnapshotFile {
         guard directoryOK(fd, privateOnly: privateOnly) else { close(fd); throw ClaudeReadFailure.untrustedLocation }
         return fd
     }
-    private static func directory(override: String?, create: Bool) throws -> Int32? {
+    private static func directory(override: String?, create: Bool, name: String = "claude") throws -> Int32? {
         if let path = override {
             guard path.hasPrefix("/"), path != "/", !path.hasSuffix("/"), !path.utf8.contains(0) else { throw ClaudeReadFailure.untrustedLocation }
             let url = URL(fileURLWithPath: path)
@@ -60,8 +76,48 @@ public enum ClaudeSnapshotFile {
         var info = stat()
         if !create, fstatat(support, "Codex HUD", &info, AT_SYMLINK_NOFOLLOW) < 0, errno == ENOENT { return nil }
         let app = try child(support, name: "Codex HUD", create: create, privateOnly: false); defer { close(app) }
-        if !create, fstatat(app, "claude", &info, AT_SYMLINK_NOFOLLOW) < 0, errno == ENOENT { return nil }
-        return try child(app, name: "claude", create: create, privateOnly: true)
+        if !create, fstatat(app, name, &info, AT_SYMLINK_NOFOLLOW) < 0, errno == ENOENT { return nil }
+        return try child(app, name: name, create: create, privateOnly: true)
+    }
+    /// Default probe working directory (sibling of the snapshot directory).
+    public static func defaultProbeDirectoryPath() -> String? {
+        guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else { return nil }
+        return String(cString: home) + "/Library/Application Support/Codex HUD/claude-probe"
+    }
+    public enum ProbeDirectoryFailure: Error { case untrusted, notEmpty }
+    /// Creates/verifies the private probe cwd (0700, O_NOFOLLOW walk, never chmods existing
+    /// objects) and requires it to be empty. Returns its verified path for `addchdir_np`.
+    public static func prepareProbeDirectory(override: String?) throws -> String {
+        guard let path = override ?? defaultProbeDirectoryPath() else { throw ProbeDirectoryFailure.untrusted }
+        let fd: Int32
+        do {
+            if override != nil { guard let opened = try directory(override: path, create: true) else { throw ProbeDirectoryFailure.untrusted }; fd = opened }
+            else { guard let opened = try directory(override: nil, create: true, name: "claude-probe") else { throw ProbeDirectoryFailure.untrusted }; fd = opened }
+        } catch let failure as ProbeDirectoryFailure { throw failure } catch { throw ProbeDirectoryFailure.untrusted }
+        defer { close(fd) }
+        let copied = dup(fd)
+        guard copied >= 0, let listing = fdopendir(copied) else { if copied >= 0 { close(copied) }; throw ProbeDirectoryFailure.untrusted }
+        defer { closedir(listing) }
+        while let entry = readdir(listing) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) } }
+            if name != "." && name != ".." { throw ProbeDirectoryFailure.notEmpty }
+        }
+        // The walk refused symlinks at every level, so the textual path is the verified one.
+        return path
+    }
+    /// S5 cross-process single flight. The lock lives in the snapshot directory (the probe
+    /// directory must stay empty). Returns the held fd, nil when another prober holds it.
+    public static func acquireProbeLock(directory override: String?) throws -> Int32? {
+        guard let dir = try directory(override: override, create: true) else { throw ClaudeReadFailure.untrustedLocation }
+        defer { close(dir) }
+        var fd = openat(dir, "probe.lock", O_RDWR | O_NONBLOCK | O_CREAT | O_EXCL | flags, 0o600)
+        if fd >= 0 {
+            guard fchmod(fd, 0o600) == 0 else { close(fd); throw ClaudeReadFailure.ioError }
+        } else if errno == EEXIST { fd = openat(dir, "probe.lock", O_RDWR | O_NONBLOCK | flags) }
+        guard fd >= 0 else { throw ClaudeReadFailure.ioError }
+        do { try validateFile(fd) } catch { close(fd); throw error }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { return fd }
+        close(fd); return nil
     }
     private static func validateFile(_ fd: Int32, maxSize: Int64 = 16 * 1024) throws {
         var info = stat()
@@ -90,7 +146,7 @@ public enum ClaudeSnapshotFile {
                 // corrupt/reset/changedAt anomalies. Never expose this fallback to HUD reads.
                 if recoverFutureObservation,
                    let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let seen = (object["bridgeSeenAt"] as? NSNumber)?.doubleValue,
+                   let seen = [object["bridgeSeenAt"], object["probedAt"]].compactMap({ ($0 as? NSNumber)?.doubleValue }).max(),
                    seen.isFinite, seen > Double(now), seen >= Double(ClaudeSnapshot.minTime),
                    seen <= Double(ClaudeSnapshot.maxTime), seen.rounded(.down) == seen,
                    let future = try? ClaudeSnapshot.decode(data, now: Int64(seen)) { return .valid(future) }
@@ -122,24 +178,30 @@ public enum ClaudeSnapshotFile {
         close(fd); return nil
     }
     public static func write(input: ClaudeStatuslineInput, directory override: String? = nil, now: Int64) -> ClaudeWriteResult {
-        writeImpl(input: input, directory: override, now: now, beforeReplace: nil)
+        writeImpl(directory: override, now: now, beforeReplace: nil) { try ClaudeSnapshotMerge.merge(existing: $0, input: input, now: now) }
+    }
+    /// Probe results go through the same lock and atomic replacement as bridge writes.
+    public static func write(probe: (fiveHour: ClaudeProbeWindow?, sevenDay: ClaudeProbeWindow?), directory override: String? = nil, now: Int64, permit: ClaudeCommitPermit? = nil) -> ClaudeWriteResult {
+        writeImpl(directory: override, now: now, beforeReplace: nil, permit: permit) { try ClaudeSnapshotMerge.merge(existing: $0, probe: probe, now: now) }
     }
     // Internal hook is available only to debug @testable imports, not to the CLI.
     #if DEBUG
-    static func writeForTesting(input: ClaudeStatuslineInput, directory: String, now: Int64, beforeReplace: (() throws -> Void)?) -> ClaudeWriteResult {
-        writeImpl(input: input, directory: directory, now: now, beforeReplace: beforeReplace)
+    static func writeForTesting(input: ClaudeStatuslineInput, directory: String, now: Int64, permit: ClaudeCommitPermit? = nil, beforeReplace: (() throws -> Void)?) -> ClaudeWriteResult {
+        writeImpl(directory: directory, now: now, beforeReplace: beforeReplace, permit: permit) { try ClaudeSnapshotMerge.merge(existing: $0, input: input, now: now) }
     }
     #endif
-    private static func writeImpl(input: ClaudeStatuslineInput, directory override: String?, now: Int64, beforeReplace: (() throws -> Void)?) -> ClaudeWriteResult {
+    private static func writeImpl(directory override: String?, now: Int64, beforeReplace: (() throws -> Void)?, permit: ClaudeCommitPermit? = nil, merge: (ClaudeSnapshot?) throws -> ClaudeSnapshot?) -> ClaudeWriteResult {
+        guard permit?.isValid != false else { return .cancelled }
         do {
             guard let dir = try directory(override: override, create: true) else { return .refused }; defer { close(dir) }
-            guard let locked = try lock(dir) else { return .lockBusy }; defer { close(locked) }
+            guard let locked = try lock(dir) else { return permit?.isValid == false ? .cancelled : .lockBusy }; defer { close(locked) }
+            guard permit?.isValid != false else { return .cancelled }
             let old = readAt(dir, now: now, recoverFutureObservation: true)
             switch old {
             case .failed(.untrustedLocation), .failed(.notRegularFile), .failed(.permissions), .failed(.ioError): return .refused
             default: break
             }
-            guard let merged = try ClaudeSnapshotMerge.merge(existing: old.snapshot, input: input, now: now) else { return .throttled }
+            guard let merged = try merge(old.snapshot) else { return .throttled }
             let data = try merged.encoded(now: now)
             let name = "snapshot.json.tmp.\(getpid()).\(String(format: "%08x", arc4random()))"
             let fd = openat(dir, name, O_WRONLY | O_CREAT | O_EXCL | flags, 0o600)
@@ -160,7 +222,11 @@ public enum ClaudeSnapshotFile {
             guard success, fsync(fd) == 0 else { return .refused }
             close(fd); closed = true
             try beforeReplace?()
-            guard renameat(dir, name, dir, "snapshot.json") == 0 else { return .refused }
+            let replace = { renameat(dir, name, dir, "snapshot.json") == 0 }
+            if let permit {
+                guard let committed = permit.commit(replace) else { return .cancelled }
+                guard committed else { return .refused }
+            } else if !replace() { return .refused }
             cleanup(dir, now: now)
             return .written
         } catch ClaudeReadFailure.clockSkew { return .clockSkew }
@@ -197,4 +263,7 @@ public actor ClaudeSnapshotReader {
     public init() {}
     public func read(directory: String? = nil, now: Int64) -> ClaudeFileResult { ClaudeSnapshotFile.read(directory: directory, now: now) }
     public func clear(directory: String? = nil) -> Bool { ClaudeSnapshotFile.clear(directory: directory) }
+    public func write(probe: ClaudeProbeResult, directory: String? = nil, now: Int64, permit: ClaudeCommitPermit? = nil) -> ClaudeWriteResult {
+        ClaudeSnapshotFile.write(probe: (probe.fiveHour, probe.sevenDay), directory: directory, now: now, permit: permit)
+    }
 }

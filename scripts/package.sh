@@ -66,7 +66,7 @@ request={'cwd':'synthetic-secret','rate_limits':{'five_hour':{'used_percentage':
 r=subprocess.run([str(v/'Codex HUD.app/Contents/MacOS/CodexHUD'),'--claude-statusline-bridge','--claude-snapshot-dir',str(v/'snap')],input=json.dumps(request).encode(),capture_output=True,timeout=3)
 assert r.returncode==0 and r.stdout=='5h 58% · W 77%\n'.encode() and not r.stderr
 s=json.loads((v/'snap/snapshot.json').read_bytes())
-assert set(s)=={'schema','bridgeSeenAt','fiveHour','sevenDay'} and s['fiveHour']['usedPercentage']==42
+assert s['schema']==2 and set(s)=={'schema','bridgeSeenAt','fiveHour','sevenDay'} and s['fiveHour']['usedPercentage']==42
 assert 'secret' not in json.dumps(s)
 assert stat.S_IMODE((v/'snap/snapshot.json').stat().st_mode)==0o600
 result={'archiveSelfCheck':True,'licenseIncluded':True,'syntheticBridgePassed':True,'architecture':'arm64','plistMinimumOS':'13.0','machOMinimumOS':'13.0','dynamicDependencies':'system-only','signature':'ad-hoc; not notarized','sha256':hashlib.sha256((p/'CodexHUD-macOS-arm64.zip').read_bytes()).hexdigest()}

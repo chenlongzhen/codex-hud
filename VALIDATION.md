@@ -1,6 +1,42 @@
 # Validation record
 
-## 2026-11-15: Codex + Claude HUD local candidate
+## 2026-11-15: active official-CLI polling increment
+
+Implementation by Astra after the original execution agent failed and the user approved takeover. No install/overwrite, commit/push or publication. The following results are from this increment; historical sections below are not rerun claims.
+
+| Check | Actual result |
+|---|---|
+| `./scripts/check.sh` | **706 behavior assertions passed**; includes continuous five-hour replay with independent scheduling, commit revocation immediately before rename, parser/schema/scheduler and fake-executor tests |
+| Debug application build | Passed |
+| Debug `--check-window` | **40 checks passed**: four suspended-probe invalidations plus eight real private-directory writer/clear lifecycle barriers (disable, probe-disable, settings, stop, sleep, preview save, both clear orderings); injected fake runner, production snapshot writer, no real CLI |
+| Temporary Release app build | Passed; plist and ad-hoc signature verified |
+| Release `verify-claude-probe.sh` | **18 process checks passed**, including native env/fd isolation, matching trust prompt, dry-run, cross-process lock, SIGTERM cancellation and parent SIGKILL hangup; stubborn helper ignores both HUP/TERM, actual **32.040s** timeout+grace with raw exit status SIGKILL |
+| Release bridge regression | **28 process checks passed** |
+| Release fixture regression | **11 checks, 25 native checks and five synthetic demo renders passed** |
+| Separate Release window check | Passed, all 25 native checks |
+| Official CLI dry-run | Exit 0, both quota windows/reset timestamps parsed; **5.14s executor / 6.00s whole launch**; empty stderr, no remaining child process group |
+| Probe transcript side effects | Names/sizes/mtime metadata unchanged before/after that dry-run; no contents read or deleted |
+| Packaging / independent acceptance | **First acceptance rejected** the initial passing build: replay could defer active polling until reset; invalidation did not revoke queued disk writes. Both now have regression fixes/tests above. **Second independent acceptance passed**: 15/30/60-minute replay cases and 14 commit-barrier combinations close both blockers. The exact ZIP passed the full matrix and its extracted app matches a fresh source build byte-for-byte |
+
+Approved **local, unpublished, unnotarized** candidate ZIP SHA-256: `f34c080d3e142686ac200fe05e48545b891ea82b3dcc9e1f6511a89cae4187ed`. Independent Astra/high acceptance reran the core706, Debug40, exact-ZIP probe18/bridge28/fixture11+native25; strict timeout+SIGKILL measured 32.0286s. This does not authorize installation or publication.
+
+Real smoke data is private and not copied here. Dry-run used an explicit temporary snapshot directory; it did not write the user's actual quota snapshot. The fixed `/usage` command does not submit a model task, but this test does not independently audit all network/token accounting of future CLI versions. First-time trust, other plans/versions, long-running cadence, manual UI interaction and clean-machine/Gatekeeper remain unverified outside synthetic coverage.
+
+Reproduce synthetic process tests after building a temporary app:
+
+```sh
+./scripts/check.sh
+V="$(/usr/bin/python3 -c 'import pathlib,tempfile; print(pathlib.Path(tempfile.mkdtemp(prefix="codex-hud-active-")).resolve())')"
+./scripts/build.sh "$V/Codex HUD.app"
+BIN="$V/Codex HUD.app/Contents/MacOS/CodexHUD"
+bash scripts/verify-claude-probe.sh "$BIN" "$V/probe"
+./scripts/verify-claude-bridge.sh "$BIN" "$V/bridge"
+./scripts/verify-claude-fixtures.sh "$BIN" "$V/fixtures"
+```
+
+The 64 KiB terminal parsing budget is deliberately stricter than the original 1 MiB ceiling. The native C fixture observes exact initial envp before frameworks can add their own variables; the Swift fixture separately tolerates Foundation's generated `__CF_USER_TEXT_ENCODING`. The same-binary PTY bootstrap and close-before-reap cleanup were added in response to real failing synthetic tests, not assumed from a successful spawn.
+
+## Historical: 2026-11-15 Codex + Claude HUD local candidate
 
 This change was exercised **only with synthetic inputs, explicit private temporary directories and preview/check modes**. No real Claude/Codex configuration, credentials or default Claude snapshot was read; no normal HUD, `--diagnose` or `claude` was run. No install, login-item change, commit, push, upload or Release publication was performed. Version remains **1.1.0**. Original-release real-account results below are historical, not tests repeated in this change.
 

@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var hosting: NSHostingView<HUDView>!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
+    private var powerObservers: [NSObjectProtocol] = []
     private var resizing = false
     private var expandedFrame: NSRect?
     private var dockingWork: DispatchWorkItem?
@@ -69,6 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             Task { await renderDemo() }
             return
         }
+        let center = NSWorkspace.shared.notificationCenter
+        powerObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.store.probeSleep() } },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.store.probeWake() } }
+        ]
         updateSummary(); store.start()
         scheduleDockCheck()
         if ProcessInfo.processInfo.arguments.contains("--expanded") { store.show(.tasks) }
@@ -77,7 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in self?.capture(path: path) }
         }
     }
-    func applicationWillTerminate(_ notification: Notification) { dockingWork?.cancel(); collapseWork?.cancel(); store.stop() }
+    func applicationWillTerminate(_ notification: Notification) {
+        dockingWork?.cancel(); collapseWork?.cancel(); store.stop()
+        powerObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }; powerObservers = []
+    }
     func applicationDidBecomeActive(_ notification: Notification) { loginItem.refresh() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { revealDock(); panel.orderFrontRegardless(); return true }
     func windowDidMove(_ notification: Notification) {
@@ -275,6 +284,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             await worker?.value
             results["inflightReadInvalidated_" + action] = subject.claudeFile == nil
         }
+        for action in ["disable", "clear", "settings", "stop"] {
+            let subject = HUDStore(settings: .init(), isPreview: true)
+            var held: CheckedContinuation<ClaudeProbe.Report, Never>?
+            var writes = 0
+            subject.claudeProbeForTesting = { await withCheckedContinuation { held = $0 } }
+            subject.claudeProbeWriteForTesting = { _, _ in writes += 1; return .written }
+            subject.startProbeForTesting(); subject.requestClaudeProbe(manual: true)
+            for _ in 0..<100 where held == nil { await Task.yield() }
+            if action == "disable" { var value = subject.settings; value.claudeEnabled = false; try? subject.applyWindowSettings(value) }
+            if action == "clear" { _ = await subject.clearClaude() }
+            if action == "settings" { try? subject.applyClaudeProbeSettings(subject.settings) }
+            if action == "stop" { subject.stop() }
+            let epoch = Int64(Date().timeIntervalSince1970)
+            held?.resume(returning: ClaudeProbe.Report(result: .init(status: .success, fiveHour: .init(usedPercentage: 8, resetsAt: epoch + 3600)), elapsed: 1))
+            for _ in 0..<100 where subject.claudeProbing { await Task.yield() }
+            results["inflightProbeInvalidated_" + action] = held != nil && !subject.claudeProbing && writes == 0 && subject.claudeProbeReport == nil
+        }
+        for (key, value) in await claudeProbeCommitChecks() { results[key] = value }
         return results
     }
     #endif

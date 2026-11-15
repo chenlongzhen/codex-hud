@@ -24,9 +24,9 @@ def run(data=raw,directory=snap,extra=()):
     return subprocess.run([str(binary),'--claude-statusline-bridge','--claude-snapshot-dir',str(directory),*extra],input=data,capture_output=True,timeout=3)
 def parsed(directory=snap):
     s=json.loads((directory/'snapshot.json').read_bytes())
-    assert set(s)<={'schema','bridgeSeenAt','fiveHour','sevenDay'} and s['schema']==1
+    assert set(s)<={'schema','bridgeSeenAt','probedAt','fiveHour','sevenDay'} and s['schema']==2
     for k in ('fiveHour','sevenDay'):
-        if k in s: assert set(s[k])=={'usedPercentage','resetsAt','changedAt'}
+        if k in s: assert {'usedPercentage','resetsAt','changedAt'} <= set(s[k]) <= {'usedPercentage','resetsAt','changedAt','confirmedAt'}
     return s
 def fingerprint(directory=snap):return hashlib.sha256((directory/'snapshot.json').read_bytes()).digest()
 def await_ready(p):

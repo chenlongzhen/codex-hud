@@ -49,8 +49,35 @@ final class HUDStore: ObservableObject {
     private var claudeGeneration = 0
     private var claudeReading = false
     private var claudeClearing = false
+    private let claudeProbe = ClaudeProbe()
+    private var activeClaudeCommit: ClaudeCommitPermit?
+    private func invalidateClaudeProbe() {
+        activeClaudeCommit?.invalidate(); activeClaudeCommit = nil
+        claudeProbe.cancel()
+    }
+    private var probeSchedule = ClaudeProbeSchedule()
+    private var probeStarted = false
+    @Published var claudeProbing = false
+    @Published var claudeProbeReport: ClaudeProbe.Report?
+    @Published var claudeProbeFinishedAt: Date?
+    @Published var claudeProbeWriteError = false
+    @Published var claudeDetecting = false
+    private var uptime: Double { Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000 }
+    var canProbeClaude: Bool { !isPreview && !claudeDetecting && !claudeProbing && settings.claudeEnabled && settings.claudeProbeEnabled && probeSchedule.manualAllowed(uptime: uptime) }
+    var claudeProbeText: String {
+        if claudeProbing { return "正在向 Claude Code 查询…" }
+        if claudeProbeWriteError { return "查询已返回，但未能保存观测" }
+        guard let report = claudeProbeReport else { return settings.claudeProbeEnabled ? "等待定时查询" : "主动查询已关闭" }
+        if report.result.status == .success { return "✓ \(Display.age(claudeProbeFinishedAt, now: now)) 前查询成功" }
+        if let retry = report.result.retryAfter { return report.result.status.text + "，\(Display.date(Date(timeIntervalSince1970: Double(retry)))) 后重试" }
+        return report.result.status.text
+    }
     #if DEBUG
     var claudeReadForTesting: (() async -> ClaudeFileResult)?
+    var claudeClearForTesting: (() async -> Bool)?
+    var claudeProbeForTesting: (() async -> ClaudeProbe.Report)?
+    var claudeProbeWriteForTesting: ((ClaudeProbeResult, ClaudeCommitPermit) async -> ClaudeWriteResult)?
+    func startProbeForTesting() { probeStarted = true; configureProbe() }
     #endif
     var claude: ClaudePresentation { ClaudePresentation(file: claudeFile, now: Int64(now.timeIntervalSince1970), enabled: settings.claudeEnabled) }
     var claudeOverall: ClaudeOverall { claude.overall }
@@ -109,8 +136,10 @@ final class HUDStore: ObservableObject {
         return "W \(percent)  ·  ●\(tasksAvailable ? String(running.count) : "—")  ◉\(tasksAvailable ? String(waiting.count) : "—")\(issue != nil || cardSeverity != .normal ? " !" : "")" + (settings.claudeEnabled ? " · " + claude.menu : "")
     }
 
-    func start() {
+    func start(allowClaudeProbe: Bool = true) {
         guard !isPreview else { return }
+        probeStarted = allowClaudeProbe
+        configureProbe()
         Task { await readClaude() }
         wireCallbacks()
         observerRefresh()
@@ -122,6 +151,8 @@ final class HUDStore: ObservableObject {
     }
     func stop() {
         generation += 1; claudeGeneration += 1; claudeFile = nil
+        probeStarted = false; activeClaudeCommit?.invalidate(); activeClaudeCommit = nil
+        claudeProbe.cancelAndWait(); probeSchedule.invalidate()
         timer?.invalidate(); timer = nil; rpc.stop(); observer.stop()
     }
     private func wireCallbacks() {
@@ -148,6 +179,7 @@ final class HUDStore: ObservableObject {
     }
     private func tick() {
         now = Date(); tickCount += 1
+        requestClaudeProbe()
         if tickCount % 5 == 0 {
             Task { await readClaude() }
             if !serverConnected && !connecting { Task { await connect() } }
@@ -284,6 +316,86 @@ final class HUDStore: ObservableObject {
         }
         summaryChanged?()
     }
+    private var probingPermitted: Bool {
+        #if DEBUG
+        if isPreview { return claudeProbeForTesting != nil && claudeProbeWriteForTesting != nil }
+        #endif
+        return !isPreview
+    }
+    private func configureProbe() {
+        probeSchedule.configure(enabled: probeStarted && probingPermitted && settings.claudeEnabled && settings.claudeProbeEnabled,
+                                interval: settings.claudeProbeInterval, uptime: uptime)
+    }
+    func probeSleep() { probeSchedule.sleep(); claudeGeneration += 1; invalidateClaudeProbe() }
+    func probeWake() { probeSchedule.wake(uptime: uptime) }
+    func requestClaudeProbe(manual: Bool = false) {
+        guard probeStarted, probingPermitted, !claudeProbing, !claudeDetecting, !claudeClearing,
+              probeSchedule.begin(uptime: uptime, now: Int64(Date().timeIntervalSince1970), snapshot: claudeFile?.snapshot,
+                                  manual: manual, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled) else { return }
+        claudeProbing = true; claudeProbeWriteError = false
+        let current = claudeGeneration, runner = claudeProbe
+        let token = runner.cancellationToken
+        let permit = ClaudeCommitPermit(); activeClaudeCommit = permit
+        let options = ClaudeProbe.Options(executable: settings.claudeExecutable, configDirectory: settings.claudeConfigDir)
+        Task {
+            var report: ClaudeProbe.Report
+            #if DEBUG
+            if let run = claudeProbeForTesting { report = await run() }
+            else { report = await Task.detached { runner.run(options, cancellationToken: token) }.value }
+            #else
+            report = await Task.detached { runner.run(options, cancellationToken: token) }.value
+            #endif
+            guard current == claudeGeneration, settings.claudeEnabled, settings.claudeProbeEnabled, probeStarted else {
+                claudeProbing = false; probeSchedule.finish(result: .init(status: .cancelled), uptime: uptime, now: Int64(Date().timeIntervalSince1970)); return
+            }
+            let time = Int64(Date().timeIntervalSince1970)
+            if report.result.status == .success {
+                report.result = ClaudeSnapshotMerge.usableProbe(report.result, existing: claudeFile?.snapshot, now: time)
+                if report.result.status == .success {
+                    // The actor serializes commit with clear(); a subsequent clear always wins.
+                    let written: ClaudeWriteResult
+                    #if DEBUG
+                    if let write = claudeProbeWriteForTesting { written = await write(report.result, permit) }
+                    else { written = await claudeReader.write(probe: report.result, now: time, permit: permit) }
+                    #else
+                    written = await claudeReader.write(probe: report.result, now: time, permit: permit)
+                    #endif
+                    guard current == claudeGeneration, settings.claudeEnabled, settings.claudeProbeEnabled, probeStarted else {
+                        claudeProbing = false; probeSchedule.finish(result: .init(status: .cancelled), uptime: uptime, now: time); return
+                    }
+                    claudeProbeWriteError = written != .written
+                    if written == .lockBusy { report.result.status = .busy }
+                    else if written != .written { report.result.status = .parseFailed }
+                }
+            }
+            claudeProbeReport = report; claudeProbeFinishedAt = Date(); claudeProbing = false
+            probeSchedule.finish(result: report.result, uptime: uptime, now: time, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+            await readClaude(); summaryChanged?(); layoutChanged?()
+        }
+    }
+    func applyClaudeProbeSettings(_ value: HUDConfiguration) throws {
+        var updated = settings
+        updated.claudeProbeEnabled = value.claudeProbeEnabled
+        updated.claudeProbeInterval = [900, 1800, 3600].contains(value.claudeProbeInterval) ? value.claudeProbeInterval : 900
+        updated.claudeExecutable = value.claudeExecutable?.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.claudeConfigDir = value.claudeConfigDir?.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.claudeProbeNoticeSeen = value.claudeProbeNoticeSeen
+        if !isPreview { try updated.save() }
+        claudeGeneration += 1; invalidateClaudeProbe(); settings = updated
+        claudeProbeReport = nil; configureProbe(); summaryChanged?(); layoutChanged?()
+    }
+    func dismissClaudeProbeNotice() {
+        var value = settings; value.claudeProbeNoticeSeen = true
+        // Acknowledging text must not restart the scheduler or cancel a running query.
+        if !isPreview { do { try value.save() } catch { return } }
+        settings = value; layoutChanged?()
+    }
+    func detectClaudeExecutable() async -> String? {
+        guard !isPreview, !claudeProbing, !claudeDetecting else { return nil }
+        claudeDetecting = true; defer { claudeDetecting = false }
+        let runner = claudeProbe
+        return await Task.detached { runner.detectExecutable() }.value
+    }
     func readClaude() async {
         var permitted = !isPreview
         #if DEBUG
@@ -304,7 +416,14 @@ final class HUDStore: ObservableObject {
         claudeFile = result; summaryChanged?()
     }
     func clearClaude() async -> Bool {
-        claudeGeneration += 1; claudeFile = nil
+        claudeGeneration += 1; claudeFile = nil; invalidateClaudeProbe()
+        #if DEBUG
+        if isPreview, let clear = claudeClearForTesting {
+            guard !claudeClearing else { return false }
+            claudeClearing = true; defer { claudeClearing = false }
+            return await clear()
+        }
+        #endif
         guard !isPreview else { return true }
         guard !claudeClearing else { return false }
         claudeClearing = true
@@ -324,8 +443,9 @@ final class HUDStore: ObservableObject {
         updated.claudeEnabled = value.claudeEnabled
         if !isPreview { try updated.save() }
         let changedClaude = settings.claudeEnabled != updated.claudeEnabled
-        if changedClaude { claudeGeneration += 1; claudeFile = nil }
+        if changedClaude { claudeGeneration += 1; claudeFile = nil; invalidateClaudeProbe() }
         settings = updated
+        if changedClaude { configureProbe() }
         if changedClaude && updated.claudeEnabled { Task { await readClaude() } }
         windowSettingsChanged?(); summaryChanged?()
     }
@@ -334,7 +454,10 @@ final class HUDStore: ObservableObject {
         value.transparency = settings.transparency; value.alwaysOnTop = settings.alwaysOnTop
         value.edgeCollapseEnabled = settings.edgeCollapseEnabled
         value.claudeEnabled = settings.claudeEnabled
-        if isPreview { settings = value; claudeGeneration += 1; return }
+        value.claudeProbeEnabled = settings.claudeProbeEnabled; value.claudeProbeInterval = settings.claudeProbeInterval
+        value.claudeExecutable = settings.claudeExecutable; value.claudeConfigDir = settings.claudeConfigDir
+        value.claudeProbeNoticeSeen = settings.claudeProbeNoticeSeen
+        if isPreview { settings = value; claudeGeneration += 1; invalidateClaudeProbe(); return }
         try value.save(); stop(); settings = value
         rpc = AppServer(); observer = DesktopObserver(home: value.homeURL); scanner = TokenScanner(home: value.homeURL)
         quota = nil; quotaUpdatedAt = nil; tokenReport = nil; tokenError = nil; quotaError = nil

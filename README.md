@@ -13,7 +13,7 @@
 ## 能看什么
 
 - **Codex Weekly 剩余额度与 Reset 时间**，不以 5h 替代。
-- **Claude 5h / Weekly 本地额度观测**，和 Codex 同屏；一次手动状态栏接入，不读取 Claude 凭据。Claude Reset 不是重置卡。
+- **Claude 5h / Weekly 额度**，默认每 15 分钟后台运行官方 Claude Code `/usage` 查询，不必保持 Claude Code 窗口打开；可选状态栏桥接。HUD 不直接读取 Claude 凭据。Claude Reset 不是重置卡。
 - **Today 和当前 Weekly 周期的 Token**，点击可展开 Input、Cached input、Output、Reasoning。
 - **重置卡数量及逐卡到期日**：距到期不超过三天显示橙色，不超过 24 小时显示红色。
 - **运行中和待回复任务**，区分等待回答与等待批准，待回复不会重复计入运行中。
@@ -22,7 +22,13 @@
 
 无需额外 API Key，不读取浏览器 Cookie。程序不会发起、恢复或终止任务，不会回答审批，也不会消耗重置卡。
 
-## Claude 接入：让 AI 帮你配置
+## Claude 主动查询（默认开启）
+
+本机安装并登录 Claude Code 后，HUD 启动 10 秒后开始查询，默认间隔 15 分钟（可改 30/60 分钟）。设置 → Claude 额度可关闭定时查询、填写 CLI 路径或点“立即查询”（至少间隔60秒）。展开和顶部刷新仅重读本地快照，不额外启动 CLI。查询失败会显示状态并退避，不伪造100%余量。
+
+HUD 用固定参数 `--safe-mode --strict-mcp-config /usage` 驱动官方 CLI；不是自己调用非公开接口。HUD 不打开凭据，**官方 CLI 仍使用已有登录并联网**，可能留下它自己的信任/会话状态。界面解析随 Claude Code 版本变化可能失效；并非稳定公开额度 API。源码/本地候选不等于已发布版本，详见[验证记录](VALIDATION.md)。
+
+### 可选：让 AI 帮你配置被动桥接
 
 不需要理解 JSON 或 shell。打开[给 AI 的接入文档](docs/claude-setup-for-agents.zh-CN.md)，交给能操作本机的 AI，并告诉它：
 
@@ -30,7 +36,7 @@
 
 AI 会检查应用位置、备份设置、接好状态栏桥接。你最后只需在 Claude Code 里发一条消息，等待 HUD 收到额度数据。也可按[快速指南](docs/quickstart.zh-CN.md)手动配置。
 
-> **版本说明：** 当前源码包含 Claude 功能；此次仅提交源码，尚未发布包含这些改动的新安装包。已有 GitHub Release 不保证包含 Claude 功能，可先从源码构建。应用未公证，真实 Claude 接入和干净机器首次安装仍需实测。
+> **版本说明：** 当前源码包含 Claude 功能；此次修改源代码并准备本地候选包，尚未对外发布包含这些改动的新安装包。已有 GitHub Release 不保证包含 Claude 功能，可先从源码构建。应用未公证，真实状态栏桥接接入和干净机器首次安装仍需实测；主动查询已在本机做单次 dry-run，详见验证记录。
 
 ## 安装与启动
 
@@ -125,6 +131,7 @@ flowchart LR
     Tokens --> HUD
     Claude[Claude 官方状态栏 stdin] -->|仅额度白名单| Bridge[原生离线桥接]
     Bridge -->|私有原子快照| Observation[5h / Weekly 本地观测]
+    Probe[官方 Claude CLI /usage] -->|定时 PTY 查询与严格解析| Observation
     Observation --> HUD
 ```
 
@@ -136,17 +143,19 @@ HUD 启动自己使用的 Codex app-server，通过 [官方 `account/rateLimits/
 
 ### Claude 本地观测（默认开启显示，可关闭）
 
-使用[官方 statusline stdin](https://code.claude.com/docs/en/statusline.md) 的 `rate_limits.five_hour` / `seven_day`；通常首次 API 响应后才可能提供。不新增凭据/钥匙串/cookie 读取，不调用 Claude 账户 API，不启动 Claude。原生桥接仅保存百分比与有界整数时间，HUD 每 5 秒读取私有原子快照；手动刷新只是重读。
+主动查询默认每15分钟通过 PTY 运行官方 Claude Code `/usage`，失败退避，睡眠暂停、唤醒至少等待30秒；找不到 CLI、需要登录或不支持的账户会停止自动重试。只解析5h和全模型周窗口，原始终端输出不落盘。低电量模式延长间隔。主动模式可单独关闭。
+
+可选使用[官方 statusline stdin](https://code.claude.com/docs/en/statusline.md) 的 `rate_limits.five_hour` / `seven_day` 被动桥接，通常首次 API 响应后才有字段。桥接本身仍离线且不启动子进程。两个来源都只保存百分比与有界时间，HUD 每5秒读取快照；手动刷新只是重读。HUD 不读取凭据/钥匙串/cookie，官方 CLI 自身的登录与网络行为另计。
 
 无已有状态栏者复制最小片段；已有状态栏者向**纯文本生成器**粘贴原 command 的完整 JSON 字符串并明确选择 shell。生成器自动标准解码，输出组合脚本及**仅替换 command 值**的说明，不执行命令、不读/写真实设置。保留 padding、refreshInterval、hideVimModeIndicator 和其他配置；先自行备份，断开时先恢复原 command/配置，再删脚本。见[完整快速指南](docs/quickstart.zh-CN.md)。
 
-这是本地观测，不是账户实时同步。连续 15 分钟数值/Reset 没变化标“旧”，并非服务端更新时间；过 Reset 保留“待同步”证据，不推测成 100% 剩余。读取失败清空数字。仅 used=100 称“观测为已用尽”；少于 1% 剩余显示 `<1%`。CL 和 C W 始终展示 Weekly，5h 耗尽独立提示；没有 Claude 重置卡，也不污染 Codex 告警。
+这是定期查询/本地观测，不是实时同步。15分钟既无主动查询确认、也无数值/Reset变化时标“旧”；桥接重复输入只更新接收时间，不能刷新新鲜度，也不会推迟定时查询；过 Reset 保留“待同步”证据，不推测成 100% 剩余。读取失败清空数字。仅 used=100 称“观测为已用尽”；少于 1% 剩余显示 `<1%`。CL 和 C W 始终展示 Weekly，5h 耗尽独立提示；没有 Claude 重置卡，也不污染 Codex 告警。
 
-仅一个配置来源，无法证明账号身份；多个 CLAUDE_CONFIG_DIR 会混写，换账号先停旧来源再清除。旧会话可能重播较旧值；其他设备和单独 Fable 周限额不完整覆盖。关闭 Claude 后恢复单标签并停止 HUD 读取，但用户配置的桥接仍可写入。
+仅一个配置来源，无法证明账号身份；多个 CLAUDE_CONFIG_DIR 会混写，换账号先停旧来源再清除。旧会话可能重播较旧值；其他设备和单独 Fable 周限额不完整覆盖。关闭 Claude 后恢复单标签并停止 HUD 读取/主动查询，但用户配置的桥接仍可写入。新快照写 schema 2、兼容读取 schema 1；降级到旧 HUD 会显示版本不支持，可停止来源后清除旧观测重新接入。
 
 组合脚本输入收集等待 EOF，无大小/时间上限，不受桥接 main 起 2 秒预算覆盖，shell 变量不能保留 NUL。原命令在所选 shell 独立 -c 上下文运行。合成进程组 SIGTERM 已测试；真实 Claude 取消语义未验证，单独终止 wrapper 不保证终止后代，不承诺总延迟或孤儿进程的绝对保证。真实接入、干净机器、quarantine/Gatekeeper、其他系统均需用户实测。
 
-`./scripts/package.sh` 可在私有临时目录生成**不发布的本地候选包**，含 app、指南、LICENSE、SHA-256 和解压自检，核验 arm64、Mach-O macOS 13 最低版本及纯系统动态依赖。免编译仅指用户无需 Swift/Xcode，仍需手动接入和可能的系统放行。版本仍为 1.1.0，不覆盖现有 Release。
+`./scripts/package.sh` 可在私有临时目录生成**不发布的本地候选包**，含 app、指南、LICENSE、SHA-256 和解压自检，核验 arm64、Mach-O macOS 13 最低版本及纯系统动态依赖。免编译仅指用户无需 Swift/Xcode；主动查询需要已安装并登录的 Claude CLI，桥接为可选，未公证应用仍可能需要系统手动放行。版本仍为 1.1.0，不覆盖现有 Release。
 
 ### 本机任务与实验接口
 

@@ -1,0 +1,5 @@
+Quick safety check:
+  /tmp/hud-synthetic-probe
+Do you trust the files in this folder?
+1. Yes, trust this folder
+2. No, exit

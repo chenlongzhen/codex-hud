@@ -13,7 +13,7 @@
 ## What it shows
 
 - **Codex Weekly remaining quota and reset time**, without substituting a five-hour window.
-- **Claude 5h and Weekly remaining quota**, alongside Codex, from local official statusline observations only (manual one-time setup). Claude Reset is a window timestamp, never a reset credit.
+- **Claude 5h and Weekly remaining quota**, alongside Codex, with official CLI `/usage` polling every 15 minutes by default; optional passive statusline observations. Claude Reset is a window timestamp, never a reset credit.
 - **Today and current Weekly-cycle tokens**, expandable into Input, Cached input, Output and Reasoning.
 - **Reset credits and individual expiry dates**: orange within three days, red within 24 hours.
 - **Running and waiting chats**, distinguishing waiting for an answer from waiting for approval. Waiting chats are not also counted as running.
@@ -22,7 +22,11 @@
 
 The HUD does not require a separate API key or access browser cookies. It does not start, resume or stop tasks, approve requests, or consume reset credits.
 
-## Claude setup: let your local AI help
+## Claude active polling (enabled by default)
+
+Install and log into the official Claude Code CLI first. HUD queries after a 10-second startup delay and then every 15 minutes; no continuously open Claude terminal is needed. Settings offer 30/60-minute intervals, a trusted CLI path, a disable switch and query-now (60-second minimum spacing). HUD does not read credentials directly; the official CLI uses its login and network. This is version-sensitive TUI parsing, not a stable account API. See [validation limits](VALIDATION.md).
+
+### Optional statusline bridge: let your local AI help
 
 Give the [AI setup guide (Chinese)](docs/claude-setup-for-agents.zh-CN.md) to an AI with local file access and ask:
 
@@ -30,7 +34,7 @@ Give the [AI setup guide (Chinese)](docs/claude-setup-for-agents.zh-CN.md) to an
 
 The guide covers locating the app, backing up settings, preserving an existing statusline, synthetic validation and recovery. Then send a message yourself in Claude Code so it can supply usage observations. A [manual quickstart (Chinese)](docs/quickstart.zh-CN.md) is also available.
 
-> **Release status:** The current source includes Claude support. This is a source update, not a new published binary release; existing GitHub downloads may not contain it. Build from source for these changes. The app is not notarized, and real Claude setup and clean-machine first launch remain unverified.
+> **Release status:** The current source includes Claude support. This is a source update, not a new published binary release; existing GitHub downloads may not contain it. Build from source for these changes. The app is not notarized, and real statusline setup and clean-machine first launch remain unverified.
 
 ## Install and start
 
@@ -125,6 +129,7 @@ flowchart LR
     Tokens --> HUD
     Claude[Claude official statusline stdin] -->|Quota whitelist only| Bridge[Offline native bridge]
     Bridge -->|Private atomic snapshot| Observation[Local 5h and Weekly observation]
+    Probe[Official Claude CLI /usage] -->|Scheduled PTY and strict parsing| Observation
     Observation --> HUD
 ```
 
@@ -136,17 +141,19 @@ Quota refreshes every 60 seconds, or every 15 seconds with details open or incom
 
 ### Claude local observations (optional display, on by default)
 
-The [official statusline input](https://code.claude.com/docs/en/statusline.md) can provide `rate_limits.five_hour` and `seven_day` after an API response. No credentials, cookies, account API requests or Claude subprocess are added. The offline bridge saves only percentages and bounded timestamps in a user-private atomic snapshot. The HUD reads it every five seconds; refresh only rereads it.
+Active polling is **enabled by default** for new installs and upgrades: after a 10-second startup delay, HUD runs the official Claude CLI with `--safe-mode --strict-mcp-config /usage` every 15 minutes (30/60 minutes are configurable). It uses a private PTY, fixed arguments and an environment allowlist. HUD does not directly read credentials/cookies or call account APIs; the official CLI still uses the existing login and network. CLI startup may create trust/session state. TUI parsing is not a stable public API and may break after upgrades. Errors back off rather than inventing quota values.
+
+The optional [official statusline bridge](https://code.claude.com/docs/en/statusline.md) remains offline and subprocess-free. Both sources save only percentages and bounded timestamps in the private snapshot. The HUD rereads it every five seconds; expand/refresh do not start another CLI. Settings provide a separate query-now button (60-second minimum spacing), trusted executable path, interval and disable switch.
 
 In Settings, choose **no existing statusline** to copy a minimal snippet, or **existing statusline** to paste the original command's complete JSON string and explicitly select its shell. The pure-text generator makes a standalone wrapper and a replacement **command value only**; retain padding, timers and all other settings. It never reads settings or executes the pasted command. Back up first; when disconnecting, restore the original command/configuration **before** deleting the wrapper. See the [step-by-step guide](docs/quickstart.zh-CN.md).
 
-These are local observations, not verified live account data. Values/reset unchanged for 15 minutes are marked old; that clock is not a server update time. Expired windows remain “waiting for observation”, never assumed full. Read failures clear numbers. Only exactly 100% used is called exhausted; less than 1% remaining shows `<1%`. Weekly always supplies CL / C W; a 5h exhaustion hint is separate. No Claude reset-credit model is invented.
+These are periodic/local observations, not live account data. A window with neither active confirmation nor observed value/reset change for 15 minutes is marked old. Repeated bridge input updates reception time only: it cannot refresh window freshness or postpone the independent active polling deadline. Unchanged values confirmed by a successful active query can stay fresh. Expired windows remain “waiting for observation”, never assumed full. Read failures clear numbers. Only exactly 100% used is called exhausted; less than 1% remaining shows `<1%`. Weekly always supplies CL / C W; a 5h exhaustion hint is separate. No Claude reset-credit model is invented.
 
-One source only: multiple Claude configuration directories mix observations without identity checks; stop the old source before switching accounts and clearing the observation. Older sessions may replay older values. Other devices, missing windows and separate Fable limits are not fully covered. Disabling Claude hides all Claude surfaces and stops HUD reads, but does not stop a user-configured bridge.
+One source only: multiple Claude configuration directories mix observations without identity checks; stop the old source before switching accounts and clearing the observation. Older sessions may replay older values. Other devices, missing windows and separate Fable limits are not fully covered. Disabling Claude hides all Claude surfaces and stops HUD reads/polling, but does not stop a user-configured bridge. Writers now emit schema 2 and readers accept schemas 1/2; older HUD builds reject schema 2. Stop the sources and clear observations before downgrading.
 
-Wrapper input collection waits for EOF without the bridge's 2-second main budget or a size bound, and shell variables cannot retain NUL. The original command runs in the selected shell's independent `-c` context. Group SIGTERM is covered by synthetic tests; real Claude cancellation and wrapper-only descendant behavior are not guaranteed. No total-latency or orphan-process absolute guarantee is made. Real Claude setup, clean-machine installs, quarantine/Gatekeeper and older macOS versions remain unverified.
+Wrapper input collection waits for EOF without the bridge's 2-second main budget or a size bound, and shell variables cannot retain NUL. The original command runs in the selected shell's independent `-c` context. Group SIGTERM is covered by synthetic tests; real Claude cancellation and wrapper-only descendant behavior are not guaranteed. No total-latency or orphan-process absolute guarantee is made. Real statusline setup, clean-machine installs, quarantine/Gatekeeper and older macOS versions remain unverified.
 
-Build a **local, unpublished** candidate in a private temporary directory with `./scripts/package.sh`. It includes the app, Chinese guide, LICENSE, SHA-256 and extraction self-check; arm64, Mach-O macOS 13 minimum and system-only dynamic dependencies are verified. End users need no Swift/Xcode, but must configure the bridge and may need to manually allow the unnotarized app. Version remains 1.1.0; no Release was overwritten.
+Build a **local, unpublished** candidate in a private temporary directory with `./scripts/package.sh`. It includes the app, Chinese guide, LICENSE, SHA-256 and extraction self-check; arm64, Mach-O macOS 13 minimum and system-only dynamic dependencies are verified. End users need no Swift/Xcode, but need an installed/logged-in Claude CLI for active polling and may need to manually allow the unnotarized app; the bridge is optional. Version remains 1.1.0; no Release was overwritten.
 
 ### Local tasks and the experimental interface
 

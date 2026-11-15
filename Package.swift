@@ -8,7 +8,7 @@ let package = Package(
         .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3"),
         .target(name: "HUDCore", dependencies: ["CSQLite"]),
         .executableTarget(name: "CodexHUD", dependencies: ["HUDCore"]),
-        .executableTarget(name: "HUDCoreChecks", dependencies: ["HUDCore"], path: "Tests/HUDCoreTests")
+        .executableTarget(name: "HUDCoreChecks", dependencies: ["HUDCore"], path: "Tests/HUDCoreTests", exclude: ["Fixtures"])
     ],
     swiftLanguageModes: [.v5]
 )

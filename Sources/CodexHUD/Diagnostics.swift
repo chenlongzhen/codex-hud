@@ -5,7 +5,7 @@ import HUDCore
 func runDiagnostics() async -> Int32 {
     let store = HUDStore()
     let started = Date()
-    store.start()
+    store.start(allowClaudeProbe: false) // Diagnostics never launches the Claude CLI.
     while Date().timeIntervalSince(started) < 45 {
         store.pollForDiagnostics()
         if store.quotaUpdatedAt != nil && store.weeklyTokens != nil && store.tasksAvailable && store.cards?.detailsComplete == true { break }

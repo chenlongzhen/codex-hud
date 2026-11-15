@@ -72,7 +72,7 @@ func testClaudeSnapshotFiles() throws {
         expectEqual(ClaudeSnapshotFile.write(input: sampleClaudeInput(), directory: dir, now: now), .written)
         expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now).snapshot?.fiveHour?.usedPercentage, 42)
     }
-    for text in ["{", "{\"schema\":2,\"bridgeSeenAt\":1800000000}", "{\"schema\":1,\"bridgeSeenAt\":1800000000,\"unknown\":1}", "{\"schema\":true,\"bridgeSeenAt\":1800000000}"] {
+    for text in ["{", "{\"schema\":3,\"bridgeSeenAt\":1800000000}", "{\"schema\":1,\"bridgeSeenAt\":1800000000,\"unknown\":1}", "{\"schema\":true,\"bridgeSeenAt\":1800000000}"] {
         try Data(text.utf8).write(to: target)
         expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now).snapshot, nil)
         expectEqual(ClaudeSnapshotFile.write(input: sampleClaudeInput(), directory: dir, now: now), .written)
@@ -148,5 +148,21 @@ func testClaudeSnapshotFiles() throws {
     expectEqual(lockInfo.st_ino, afterClear.st_ino)
     expectEqual(ClaudeSnapshotFile.write(input: sampleClaudeInput(), directory: dir, now: now + 20), .written)
     expectEqual(ClaudeSnapshotFile.clear(directory: dir), true)
+
+    // F2: invalidate after the temp file is fully written/fsynced, immediately before rename.
+    let permit = ClaudeCommitPermit()
+    expectEqual(ClaudeSnapshotFile.writeForTesting(input: sampleClaudeInput(), directory: dir, now: now + 30, permit: permit) { permit.invalidate() }, .cancelled)
+    expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now + 30), .absent)
+    expectEqual(permit.isValid, false)
+    expectEqual(ClaudeSnapshotFile.write(probe: (ClaudeProbeWindow(usedPercentage: 8, resetsAt: now + 3600), nil), directory: dir, now: now + 30, permit: permit), .cancelled)
+    expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now + 30), .absent)
+    // Already committed is allowed; a later clear must remove it and old authority stays revoked.
+    let livePermit = ClaudeCommitPermit()
+    expectEqual(ClaudeSnapshotFile.write(probe: (ClaudeProbeWindow(usedPercentage: 8, resetsAt: now + 3600), nil), directory: dir, now: now + 30, permit: livePermit), .written)
+    livePermit.invalidate()
+    expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now + 30).snapshot?.fiveHour?.usedPercentage, 8)
+    expectEqual(ClaudeSnapshotFile.clear(directory: dir), true)
+    expectEqual(ClaudeSnapshotFile.write(probe: (ClaudeProbeWindow(usedPercentage: 9, resetsAt: now + 3600), nil), directory: dir, now: now + 31, permit: livePermit), .cancelled)
+    expectEqual(ClaudeSnapshotFile.read(directory: dir, now: now + 31), .absent)
 }
 #endif

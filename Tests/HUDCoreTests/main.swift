@@ -11,6 +11,8 @@ func expectEqual<T: Equatable>(_ actual: T, _ expected: T, file: String = #file,
     if actual != expected { failures += 1; print("FAIL \(URL(fileURLWithPath: file).lastPathComponent):\(line): \(actual) != \(expected)"); fflush(stdout) }
 }
 #if DEBUG
+ClaudeProbe.executePTYChildIfRequested(CommandLine.arguments)
+if runProbeFixtureIfNeeded() { exit(0) }
 if CommandLine.arguments.count == 6, CommandLine.arguments[1] == "--export-wrapper" {
     let shell = ClaudeSetup.Shell(rawValue: CommandLine.arguments[5])!
     let text = try ClaudeSetup.wrapperScript(executable: CommandLine.arguments[3], originalCommandJSON: CommandLine.arguments[4], shell: shell)
@@ -44,8 +46,10 @@ testTokenOverflowIsReportedWithoutCrashing()
 try await testOversizedSessionLineIsSkippedAndScanningRecovers()
 try await testOversizedCompleteRPCResponseFailsBeforeDecoding()
 try testClaudeQuotaContracts()
+claudeUsageTests()
 #if DEBUG
 try testClaudeSnapshotFiles()
+try testClaudeProbeExecutionAndSchedule()
 #endif
 try testClaudeSetupTextAndWrappers()
 if failures > 0 { exit(1) }

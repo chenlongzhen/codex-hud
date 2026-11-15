@@ -1,0 +1,16 @@
+Current session
+████ 8% used
+Resets 7:59pm (Asia/Shanghai)
+Current week (all models)
+███████████ 23% used
+Resets Nov 20 at 7:59pm (Asia/Shanghai)
+Current week (Fable)
+█████████ 18% used
+Resets Nov 21 at 8pm (Asia/Shanghai)
+Per-model breakdown unavailable (rate limited until 7:25pm)
+Approximate · sessions on this machine only
+MCP servers % of usage
+example 11%
+██▌ 13% used
+Session cost
+$0.0000

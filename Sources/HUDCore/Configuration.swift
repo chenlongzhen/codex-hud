@@ -9,6 +9,11 @@ public struct HUDConfiguration: Codable {
     public var alwaysOnTop: Bool
     public var edgeCollapseEnabled: Bool
     public var claudeEnabled = true
+    public var claudeProbeEnabled = true
+    public var claudeProbeInterval = 900
+    public var claudeExecutable: String?
+    public var claudeConfigDir: String?
+    public var claudeProbeNoticeSeen = false
     public init() {
         codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
         executable = ""; sharedSocket = ""; desktopFeedEnabled = true
@@ -16,6 +21,7 @@ public struct HUDConfiguration: Codable {
     }
     private enum CodingKeys: String, CodingKey {
         case codexHome, executable, sharedSocket, desktopFeedEnabled, transparency, alwaysOnTop, edgeCollapseEnabled, claudeEnabled
+        case claudeProbeEnabled, claudeProbeInterval, claudeExecutable, claudeConfigDir, claudeProbeNoticeSeen
     }
     public init(from decoder: Decoder) throws {
         self.init()
@@ -28,6 +34,12 @@ public struct HUDConfiguration: Codable {
         alwaysOnTop = try values.decodeIfPresent(Bool.self, forKey: .alwaysOnTop) ?? alwaysOnTop
         edgeCollapseEnabled = try values.decodeIfPresent(Bool.self, forKey: .edgeCollapseEnabled) ?? edgeCollapseEnabled
         claudeEnabled = try values.decodeIfPresent(Bool.self, forKey: .claudeEnabled) ?? true
+        claudeProbeEnabled = try values.decodeIfPresent(Bool.self, forKey: .claudeProbeEnabled) ?? true
+        let cadence = try values.decodeIfPresent(Int.self, forKey: .claudeProbeInterval) ?? 900
+        claudeProbeInterval = [900, 1800, 3600].contains(cadence) ? cadence : 900
+        claudeExecutable = try values.decodeIfPresent(String.self, forKey: .claudeExecutable)
+        claudeConfigDir = try values.decodeIfPresent(String.self, forKey: .claudeConfigDir)
+        claudeProbeNoticeSeen = try values.decodeIfPresent(Bool.self, forKey: .claudeProbeNoticeSeen) ?? false
     }
     public static var fileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Codex HUD/settings.json")

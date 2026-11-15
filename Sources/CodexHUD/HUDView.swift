@@ -172,7 +172,17 @@ struct HUDView: View {
                 claudeRow("W", window: store.claude.sevenDay)
                 if store.claude.exhausted { Text("5h 观测为已用尽").font(.system(size: 10)).foregroundStyle(.red).accessibilityLabel("Claude 5 小时额度观测为已用尽") }
             }
-        }.help("本地状态栏观测；未变化时间不是服务端更新时间。刷新只重读快照。")
+            if store.settings.claudeProbeEnabled {
+                if store.claudeProbing || store.claudeProbeWriteError || (store.claudeProbeReport.map { $0.result.status != .success } ?? false) {
+                    Text(store.claudeProbeText).font(.system(size: 9)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                if !store.settings.claudeProbeNoticeSeen {
+                    Text("已开启定时查询：每 \(store.settings.claudeProbeInterval / 60) 分钟运行 Claude Code /usage（不发送模型请求）；可在设置关闭。")
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                    Button("知道了") { store.dismissClaudeProbeNotice() }.buttonStyle(.plain).font(.system(size: 9))
+                }
+            }
+        }.help("主动查询通过官方 Claude Code /usage；状态栏为本地观测，均非实时。顶部刷新只重读快照。")
     }
     private func claudeRow(_ label: String, window: ClaudeWindow?) -> some View {
         let state = ClaudeWindowState.evaluate(window: window, now: store.claude.now)
@@ -444,7 +454,30 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Claude 额度").font(.headline)
             Toggle("显示 Claude 额度", isOn: windowBinding(\.claudeEnabled))
-            Text("关闭只影响 HUD 显示，不停止桥接记录。彻底断开请手动恢复/移除桥接配置。").font(.caption)
+            Text("关闭显示会停止主动查询，但不停止外部桥接。彻底断开请恢复/移除桥接配置。").font(.caption)
+            Toggle("定时向 Claude Code 查询额度", isOn: probeBinding(\.claudeProbeEnabled))
+            Picker("查询间隔", selection: probeBinding(\.claudeProbeInterval)) {
+                Text("15 分钟").tag(900); Text("30 分钟").tag(1800); Text("60 分钟").tag(3600)
+            }
+            field("Claude 可执行文件（绝对路径）", text: Binding(get: { value.claudeExecutable ?? "" }, set: { value.claudeExecutable = $0 }), placeholder: "留空自动检测常见安装位置")
+            field("Claude 配置目录（可选，单一来源）", text: Binding(get: { value.claudeConfigDir ?? "" }, set: { value.claudeConfigDir = $0 }), placeholder: "留空使用 Claude Code 默认目录")
+            HStack {
+                Button(store.claudeDetecting ? "检测中…" : "检测路径") {
+                    Task {
+                        if let path = await store.detectClaudeExecutable() { value.claudeExecutable = path }
+                        else { error = "未找到可信的 claude，请填写绝对路径" }
+                    }
+                }.disabled(store.isPreview || store.claudeDetecting || store.claudeProbing)
+                Button("保存查询路径") {
+                    var changed = store.settings; changed.claudeExecutable = value.claudeExecutable; changed.claudeConfigDir = value.claudeConfigDir
+                    do { try store.applyClaudeProbeSettings(changed) } catch { self.error = error.localizedDescription }
+                }
+                Button("立即查询") { store.requestClaudeProbe(manual: true) }.disabled(!store.canProbeClaude)
+            }
+            Text(store.claudeProbeText).font(.caption).foregroundStyle(.secondary)
+            Text("默认开启；启动/开启后 10 秒首查，失败退避。使用安全模式执行 /usage，不发送模型请求；HUD 不读取凭据，官方 CLI 仍会使用登录信息并联网。首次仅自动信任 HUD 的空私有目录。检测路径在常见位置无结果时会运行登录 shell（其启动文件可能执行）。").font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Text("可选：状态栏被动桥接").font(.subheadline)
             Text(store.claude.statusText).font(.caption).foregroundStyle(.secondary)
             Text(executable).font(.system(size: 9, design: .monospaced)).textSelection(.enabled)
             if let warning = ClaudeSetup.pathWarning(executable) { Text(warning).font(.caption).foregroundStyle(.orange) }
@@ -482,6 +515,12 @@ struct SettingsView: View {
     }
     private func code(_ text: String) -> some View { Text(text).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(8).background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 6)) }
     private func copy(_ text: String) { guard canCopy else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+    private func probeBinding<Value>(_ keyPath: WritableKeyPath<HUDConfiguration, Value>) -> Binding<Value> {
+        Binding(get: { store.settings[keyPath: keyPath] }, set: { value in
+            var changed = store.settings; changed[keyPath: keyPath] = value
+            do { try store.applyClaudeProbeSettings(changed) } catch { self.error = error.localizedDescription }
+        })
+    }
     private func windowBinding<Value>(_ keyPath: WritableKeyPath<HUDConfiguration, Value>) -> Binding<Value> {
         Binding(get: { store.settings[keyPath: keyPath] }, set: { value in
             var changed = store.settings; changed[keyPath: keyPath] = value
