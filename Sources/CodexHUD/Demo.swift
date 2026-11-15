@@ -13,6 +13,10 @@ func loadDemoData(into store: HUDStore) throws {
     ]
     store.quota = try JSONDecoder().decode(QuotaSnapshot.self, from: JSONSerialization.data(withJSONObject: response))
     store.now = now; store.serverConnected = true
+    let epoch = Int64(now.timeIntervalSince1970)
+    store.claudeFile = .valid(ClaudeSnapshot(bridgeSeenAt: epoch - 120,
+        fiveHour: ClaudeWindow(usedPercentage: 42, resetsAt: epoch + 3600, changedAt: epoch - 120),
+        sevenDay: ClaudeWindow(usedPercentage: 23, resetsAt: epoch + 86400, changedAt: epoch - 120)))
     store.quotaUpdatedAt = now.addingTimeInterval(-4); store.cardDetailsUpdatedAt = now
     store.tasksAvailable = true; store.tasksUpdatedAt = now
     store.tasksSource = "演示数据 · Demo data"

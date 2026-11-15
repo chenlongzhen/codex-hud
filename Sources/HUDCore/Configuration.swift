@@ -8,13 +8,14 @@ public struct HUDConfiguration: Codable {
     public var transparency: Double
     public var alwaysOnTop: Bool
     public var edgeCollapseEnabled: Bool
+    public var claudeEnabled = true
     public init() {
         codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
         executable = ""; sharedSocket = ""; desktopFeedEnabled = true
         transparency = 0; alwaysOnTop = true; edgeCollapseEnabled = true
     }
     private enum CodingKeys: String, CodingKey {
-        case codexHome, executable, sharedSocket, desktopFeedEnabled, transparency, alwaysOnTop, edgeCollapseEnabled
+        case codexHome, executable, sharedSocket, desktopFeedEnabled, transparency, alwaysOnTop, edgeCollapseEnabled, claudeEnabled
     }
     public init(from decoder: Decoder) throws {
         self.init()
@@ -26,6 +27,7 @@ public struct HUDConfiguration: Codable {
         transparency = min(0.8, max(0, try values.decodeIfPresent(Double.self, forKey: .transparency) ?? 0))
         alwaysOnTop = try values.decodeIfPresent(Bool.self, forKey: .alwaysOnTop) ?? alwaysOnTop
         edgeCollapseEnabled = try values.decodeIfPresent(Bool.self, forKey: .edgeCollapseEnabled) ?? edgeCollapseEnabled
+        claudeEnabled = try values.decodeIfPresent(Bool.self, forKey: .claudeEnabled) ?? true
     }
     public static var fileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Codex HUD/settings.json")

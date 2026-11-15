@@ -1,6 +1,10 @@
 import CoreGraphics
 
 public enum HUDDockEdge: String, Equatable { case left, right }
+public enum EdgeTabLayout {
+    case codexOnly, dual
+    public var size: CGSize { self == .dual ? CGSize(width: 46, height: 166) : CGSize(width: 36, height: 108) }
+}
 
 /// Geometry in the current screen's global coordinates, including negative origins.
 public enum EdgeDocking {
@@ -10,8 +14,8 @@ public enum EdgeDocking {
         if right <= threshold { return .right }
         return nil
     }
-    public static func collapsedFrame(edge: HUDDockEdge, expanded: CGRect, in screen: CGRect) -> CGRect {
-        let size = CGSize(width: 36, height: 108)
+    public static func collapsedFrame(edge: HUDDockEdge, expanded: CGRect, in screen: CGRect, layout: EdgeTabLayout = .codexOnly) -> CGRect {
+        let size = layout.size
         let y = min(max(expanded.midY - size.height / 2, screen.minY + 8), screen.maxY - size.height - 8)
         return CGRect(x: edge == .left ? screen.minX : screen.maxX - size.width, y: y, width: size.width, height: size.height)
     }

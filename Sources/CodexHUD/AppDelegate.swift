@@ -9,8 +9,9 @@ final class HUDPanel: NSPanel {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
-    let store = HUDStore(settings: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--check-window") ? .init() : .load())
-    let loginItem = LoginItem(isPreview: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--check-window"))
+    private static var isPreview: Bool { ["--demo", "--check-window", "--check-claude"].contains(where: CommandLine.arguments.contains) }
+    let store = HUDStore(settings: AppDelegate.isPreview ? .init() : .load(), isPreview: AppDelegate.isPreview)
+    let loginItem = LoginItem(isPreview: AppDelegate.isPreview)
     private var panel: HUDPanel!
     private var hosting: NSHostingView<HUDView>!
     private var statusItem: NSStatusItem!
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var collapseWork: DispatchWorkItem?
     private let checkingWindows = CommandLine.arguments.contains("--check-window")
     private let renderingDemo = CommandLine.arguments.contains("--demo")
+    private let checkingClaude = CommandLine.arguments.contains("--check-claude")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -39,9 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hosting.setAccessibilityIdentifier("codex-hud-panel")
         panel.contentView = hosting
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        if !renderingDemo && !checkingWindows, let position = UserDefaults.standard.string(forKey: "panelOrigin") {
+        store.availableHeight = visible.height - 16
+        if !Self.isPreview, let position = UserDefaults.standard.string(forKey: "panelOrigin") {
             panel.setFrameOrigin(NSPointFromString(position))
-        } else { panel.setFrameOrigin(NSPoint(x: visible.maxX - 364, y: visible.maxY - 330)) }
+        } else { panel.setFrameOrigin(NSPoint(x: visible.maxX - 364, y: visible.maxY - panel.frame.height - 8)) }
         resizePanel()
         panel.orderFrontRegardless()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -53,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         store.summaryChanged = { [weak self] in self?.updateSummary() }
         store.windowSettingsChanged = { [weak self] in
             self?.applyWindowSettings()
+        }
+        if checkingClaude {
+            Task { await runClaudeCheck() }
+            return
         }
         if checkingWindows {
             Task { await runWindowChecks() }
@@ -87,10 +94,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         resizing = true; defer { resizing = false }
         hosting.invalidateIntrinsicContentSize(); hosting.layoutSubtreeIfNeeded()
         let visible = panel.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
+        if abs(store.availableHeight - (visible.height - 16)) > 0.5 { store.availableHeight = visible.height - 16 }
         let previous = expandedFrame ?? panel.frame
         let frame: NSRect
         if store.edgeCollapsed, let edge = store.dockEdge {
-            frame = EdgeDocking.collapsedFrame(edge: edge, expanded: previous, in: visible)
+            frame = EdgeDocking.collapsedFrame(edge: edge, expanded: previous, in: visible, layout: store.edgeLayout)
         } else {
             frame = EdgeDocking.expandedFrame(edge: store.dockEdge, previous: previous,
                 size: NSSize(width: 340, height: max(200, hosting.fittingSize.height)), in: visible)
@@ -105,9 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             store.edgeCollapsed = false; store.dockEdge = nil
             DispatchQueue.main.async { [weak self] in self?.resizePanel() }
         } else if !store.edgeCollapsed { scheduleDockCheck() }
+        DispatchQueue.main.async { [weak self] in self?.resizePanel() }
     }
     private func rememberPosition() {
-        if !checkingWindows && !renderingDemo { UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "panelOrigin") }
+        if !Self.isPreview { UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: "panelOrigin") }
     }
     private func scheduleDockCheck() {
         dockingWork?.cancel()
@@ -148,11 +157,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         collapseWork?.cancel()
         guard store.edgeCollapsed else { return }
         store.edgeCollapsed = false
+        Task { await store.readClaude() }
         DispatchQueue.main.async { [weak self] in self?.resizePanel() }
     }
     private func updateSummary() {
         statusItem?.button?.title = store.menuSummary
-        statusItem?.button?.toolTip = "Codex HUD · Weekly 剩余 / 运行中 / 待回复"
+        statusItem?.button?.toolTip = "Codex HUD · Weekly 剩余 / 运行中 / 待回复" + (store.settings.claudeEnabled ? "；" + store.claude.tooltip : "")
     }
     func menuWillOpen(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -162,6 +172,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         add(menu, "重置卡 \(store.cards?.availableCount.map(String.init) ?? "—")", nil)
         if store.cardSeverity != .normal { add(menu, "⚠ \(Display.expiry(store.nearestCard?.expiry, now: store.now))", nil) }
         if let issue = store.issue { add(menu, "⚠ \(issue)", nil) }
+        if store.settings.claudeEnabled {
+            add(menu, "Claude 5h \(store.claude.remaining(store.claude.fiveHour)) · \(store.claude.stateText(store.claude.fiveHour))\(store.claude.exhausted ? " · 观测为已用尽" : "")", nil)
+            add(menu, "Claude Weekly \(store.claude.tabText) · \(store.claude.stateText(store.claude.sevenDay)) · \(store.claude.message)", nil)
+        }
         menu.addItem(.separator())
         add(menu, panel.isVisible ? "隐藏浮窗" : "显示浮窗", #selector(togglePanel))
         add(menu, "展开详情", #selector(showDetails))
@@ -236,10 +250,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if let path, let data = bitmap.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
         return bitmap
     }
+    #if DEBUG
+    private func storeLifecycleChecks() async -> [String: Bool] {
+        var results: [String: Bool] = [:]
+        for action in ["disable", "clear", "previewSave"] {
+            let subject = HUDStore(settings: .init(), isPreview: true)
+            var held: CheckedContinuation<ClaudeFileResult, Never>?
+            var ready: CheckedContinuation<Void, Never>?
+            subject.claudeReadForTesting = {
+                await withCheckedContinuation { held = $0; ready?.resume(); ready = nil }
+            }
+            var worker: Task<Void, Never>?
+            await withCheckedContinuation { signal in
+                ready = signal
+                worker = Task { await subject.readClaude() }
+            }
+            // A second request must be coalesced, not enqueued behind the suspended read.
+            await subject.readClaude()
+            if action == "disable" { var value = subject.settings; value.claudeEnabled = false; try? subject.applyWindowSettings(value) }
+            if action == "clear" { _ = await subject.clearClaude() }
+            if action == "previewSave" { try? subject.applySettings(.init()) }
+            let epoch = Int64(subject.now.timeIntervalSince1970)
+            held?.resume(returning: .valid(ClaudeSnapshot(bridgeSeenAt: epoch)))
+            await worker?.value
+            results["inflightReadInvalidated_" + action] = subject.claudeFile == nil
+        }
+        return results
+    }
+    #endif
+    private func runClaudeCheck() async {
+        func argument(_ flag: String) -> String? {
+            guard let index = CommandLine.arguments.firstIndex(of: flag), CommandLine.arguments.count > index + 1 else { return nil }
+            return CommandLine.arguments[index + 1]
+        }
+        guard let output = argument("--check-claude"), output.hasPrefix("/"),
+              let directory = argument("--claude-snapshot-dir"), directory.hasPrefix("/"),
+              let time = argument("--now").flatMap(Int64.init), ClaudeSnapshot.validTime(time) else { exit(2) }
+        do { try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true); try loadDemoData(into: store) }
+        catch { exit(1) }
+        store.now = Date(timeIntervalSince1970: Double(time))
+        store.settings.claudeEnabled = true
+        let reader = ClaudeSnapshotReader()
+        store.claudeFile = await reader.read(directory: directory, now: time)
+        updateSummary(); resizePanel()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        resizePanel()
+        let expanded = captureView(hosting, path: output + "/expanded.png")
+        let width = hosting.bounds.width
+        let scale = panel.backingScaleFactor
+        let correctWidth = width == 340 && expanded?.pixelsWide == Int((width * scale).rounded())
+        store.edgeCollapsed = true; store.dockEdge = .right; resizePanel()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let tab = captureView(hosting, path: output + "/edge-tab.png")
+        let correctTab = hosting.bounds.size == store.edgeLayout.size && tab?.pixelsWide == Int((store.edgeLayout.size.width * scale).rounded())
+        let geometry: [String: Any] = ["logicalWidth": width, "backingScale": scale, "pixelWidth": expanded?.pixelsWide ?? 0, "exact340pt": correctWidth, "exactTabSize": correctTab]
+        do {
+            try JSONSerialization.data(withJSONObject: geometry, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output + "/render-check.json"))
+            let data = try JSONSerialization.data(withJSONObject: store.claude.fixture, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: URL(fileURLWithPath: output + "/claude-state.json"))
+            print(String(decoding: data, as: UTF8.self))
+        } catch { exit(1) }
+        exit(expanded != nil && tab != nil && correctWidth && correctTab ? 0 : 1)
+    }
     /// Exercises real NSPanel state without synthesizing input or changing saved preferences.
     private func runWindowChecks() async {
         var checks: [String: Bool] = [:]
+        var geometry: [String: Any] = [:]
         let original = store.settings
+        store.settings.claudeEnabled = false
+        let singleSize = EdgeTabLayout.codexOnly.size
+        let dualSize = EdgeTabLayout.dual.size
         let screen = panel.screen?.visibleFrame ?? NSScreen.main!.visibleFrame
         let pointer = NSEvent.mouseLocation
         let y = pointer.y < screen.midY ? screen.maxY - 350 : screen.minY + 20
@@ -255,6 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         checks["floatingWindowLevel"] = panel.level == .floating
         store.settings.transparency = 0.5
         await settle()
+        geometry["initialPanel"] = NSStringFromRect(panel.frame)
+        geometry["initialHosting"] = NSStringFromRect(hosting.bounds)
+        geometry["initialFitting"] = NSStringFromSize(hosting.fittingSize)
+        geometry["chromeHeight"] = store.chromeHeight
         let transparent = captureView(hosting, path: output.map { $0 + "/transparent.png" })
         let scale = Double(transparent?.pixelsWide ?? 340) / Double(hosting.bounds.width)
         let alpha = transparent?.colorAt(x: Int(5 * scale), y: Int(75 * scale))?.alphaComponent ?? -1
@@ -274,12 +358,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         panel.setFrameOrigin(NSPoint(x: screen.maxX - 345, y: y))
         scheduleDockCheck(); await settle(1.3)
-        checks["rightEdgeCollapsed"] = store.edgeCollapsed && store.dockEdge == .right && panel.frame.width == 36 && panel.frame.height == 108
+        checks["rightEdgeCollapsed"] = store.edgeCollapsed && store.dockEdge == .right && panel.frame.size == singleSize
         if let output { capture(path: output + "/edge-tab.png") }
         pointerChanged(true); await settle()
+        geometry["hoverPanel"] = NSStringFromRect(panel.frame)
+        geometry["hoverHosting"] = NSStringFromRect(hosting.bounds)
+        geometry["hoverFitting"] = NSStringFromSize(hosting.fittingSize)
         checks["hoverRestoresFullWidth"] = !store.edgeCollapsed && panel.frame.width == 340 && panel.frame.height >= 200
         pointerChanged(false); await settle(0.9)
-        checks["leavingCollapsesAgain"] = store.edgeCollapsed && panel.frame.width == 36
+        checks["leavingCollapsesAgain"] = store.edgeCollapsed && panel.frame.width == singleSize.width
         pointerChanged(true); await settle()
 
         panel.setFrameOrigin(NSPoint(x: screen.midX - 170, y: y))
@@ -291,6 +378,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         store.settings.edgeCollapseEnabled = false; applyWindowSettings(); await settle()
         checks["disablingCollapseRestoresWindow"] = store.dockEdge == nil && !store.edgeCollapsed && panel.frame.width == 340
 
+        store.settings.claudeEnabled = true; store.settings.edgeCollapseEnabled = true
+        store.claudeFile = nil; store.dockEdge = .right; expandedFrame = panel.frame
+        store.edgeCollapsed = true; resizePanel(); await settle()
+        checks["rightEdgeCollapsedDual"] = panel.frame.size == dualSize && panel.frame.maxX == screen.maxX
+        checks["dualTabShowsClaudeDash"] = store.claude.tabText == "—" && store.claudeOverall == .noSnapshot
+        if let output { capture(path: output + "/dual-tab.png") }
+        store.dockEdge = .left; resizePanel(); await settle()
+        checks["leftEdgeCollapsedDual"] = panel.frame.size == dualSize && panel.frame.minX == screen.minX
+        let anchor = panel.frame.midY
+        var disabled = store.settings; disabled.claudeEnabled = false
+        try? store.applyWindowSettings(disabled); await settle()
+        checks["togglingClaudeWhileCollapsedKeepsAnchor"] = panel.frame.size == singleSize && panel.frame.minX == screen.minX && abs(panel.frame.midY - anchor) <= 1
+        updateSummary()
+        let menu = NSMenu(); menuWillOpen(menu)
+        checks["disabledHidesClaude"] = !menu.items.contains { $0.title.contains("Claude") } && !(statusItem.button?.toolTip?.contains("Claude") ?? true) && !store.menuSummary.contains("C W")
+        store.edgeCollapsed = false; store.dockEdge = nil; expandedFrame = nil; resizePanel()
+        let smallStore = HUDStore(settings: .init(), isPreview: true)
+        smallStore.availableHeight = 260; smallStore.expanded = true
+        let small = NSHostingView(rootView: HUDView(store: smallStore, hide: {}, showSettings: {}, pointerChanged: { _ in }, reveal: {}))
+        small.setFrameSize(NSSize(width: 340, height: 260)); small.layoutSubtreeIfNeeded()
+        checks["syntheticSmallScreenBounded"] = small.fittingSize.height <= 260 && HUDLayout.detailHeight(available: 260, chrome: 450) == 0
+        let smallSettings = NSHostingView(rootView: SettingsView(store: smallStore, loginItem: LoginItem(isPreview: true), value: smallStore.settings, done: {}))
+        smallSettings.setFrameSize(NSSize(width: 508, height: 200)); smallSettings.layoutSubtreeIfNeeded()
+        let smallSettingsImage = captureView(smallSettings, path: output.map { $0 + "/small-settings.png" })
+        checks["syntheticSmallSettingsBounded"] = smallSettings.fittingSize.height <= 200 && smallSettingsImage != nil
+        #if DEBUG
+        checks.merge(await storeLifecycleChecks()) { _, new in new }
+        #endif
+        let isolated = HUDStore(settings: .init(), isPreview: true)
+        try? loadDemoData(into: isolated)
+        let baselineIssue = isolated.issue, baselineSeverity = isolated.cardSeverity, baselineCards = isolated.cards?.availableCount
+        isolated.claudeFile = .failed(.malformed)
+        checks["claudeFailureDoesNotChangeCodex"] = isolated.issue == baselineIssue && isolated.cardSeverity == baselineSeverity && isolated.cards?.availableCount == baselineCards
+        let epoch = Int64(isolated.now.timeIntervalSince1970)
+        isolated.claudeFile = .valid(ClaudeSnapshot(bridgeSeenAt: epoch, fiveHour: ClaudeWindow(usedPercentage: 100, resetsAt: epoch + 3600, changedAt: epoch), sevenDay: ClaudeWindow(usedPercentage: 23, resetsAt: epoch + 86400, changedAt: epoch)))
+        checks["exhaustedIsIsolatedAndTabIsWeekly"] = isolated.claude.exhausted && isolated.claude.tabText == "77%" && isolated.issue == baselineIssue && isolated.cardSeverity == baselineSeverity
+        isolated.quotaUpdatedAt = isolated.now.addingTimeInterval(-160)
+        checks["codexStaleDoesNotStaleClaude"] = isolated.quotaStale && isolated.claudeSevenDay == .observed
+        try? isolated.applySettings(.init()); isolated.start(); isolated.refresh(); isolated.openCodex()
+        checks["previewSaveReconnectIsIsolated"] = isolated.isPreview && isolated.quota != nil && isolated.claudeFile != nil
         togglePanel(); checks["hideWindow"] = !panel.isVisible
         togglePanel(); checks["showWindow"] = panel.isVisible
         store.settings = original
@@ -298,7 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         checks["settingsWindowOpens"] = settingsWindow?.isVisible == true
         if let output, let content = settingsWindow?.contentView { captureView(content, path: output + "/settings.png") }
         settingsWindow?.close()
-        let result: [String: Any] = ["checks": checks, "renderedBackgroundAlpha": alpha, "renderedForegroundMaxAlpha": foregroundAlpha]
+        let result: [String: Any] = ["checks": checks, "geometry": geometry, "renderedBackgroundAlpha": alpha, "renderedForegroundMaxAlpha": foregroundAlpha]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) { print(text) }
         store.stop()
         exit(checks.values.allSatisfy { $0 } ? 0 : 1)

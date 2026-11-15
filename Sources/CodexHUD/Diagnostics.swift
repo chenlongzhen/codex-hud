@@ -42,6 +42,7 @@ func runDiagnostics() async -> Int32 {
         result["sessionFilesScanned"] = report.scannedFiles
         result["tokenIssues"] = report.issues
     }
+    result.merge(ClaudeDiagnostics.fields(file: store.claudeFile, now: Int64(store.now.timeIntervalSince1970), enabled: store.settings.claudeEnabled)) { _, new in new }
     result["error"] = store.issue
     if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) { print(text) }
     let passed = store.quotaUpdatedAt != nil && store.tokenReport?.issues.isEmpty == true && store.weeklyTokens != nil && store.tasksAvailable && !store.quotaStale && store.cards?.detailsComplete == true

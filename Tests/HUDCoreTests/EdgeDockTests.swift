@@ -15,4 +15,13 @@ func testDockingUsesCurrentScreenAndRestoresReadableFrame() {
     expectEqual(restored.minX, -340)
     expectEqual(restored.minY, 31)
     expectEqual(restored.height, 650)
+    let dual = EdgeDocking.collapsedFrame(edge: .right, expanded: original, in: screen, layout: .dual)
+    expectEqual(dual.minX, screen.maxX - EdgeTabLayout.dual.size.width)
+    expectEqual(dual.size, EdgeTabLayout.dual.size)
+    let left = EdgeDocking.collapsedFrame(edge: .left, expanded: original, in: screen, layout: .dual)
+    expectEqual(left.minX, screen.minX)
+    let high = EdgeDocking.collapsedFrame(edge: .left, expanded: CGRect(x: -1440, y: 1000, width: 340, height: 400), in: screen, layout: .dual)
+    expectEqual(high.maxY, screen.maxY - 8)
+    let low = EdgeDocking.collapsedFrame(edge: .right, expanded: CGRect(x: -340, y: -1000, width: 340, height: 400), in: screen, layout: .dual)
+    expectEqual(low.minY, screen.minY + 8)
 }

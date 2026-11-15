@@ -21,6 +21,11 @@ struct WindowDragRegion: NSViewRepresentable {
     func updateNSView(_ view: DragView, context: Context) {}
 }
 
+private struct HUDChromeHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct HUDView: View {
     @ObservedObject var store: HUDStore
     var hide: () -> Void
@@ -40,11 +45,27 @@ struct HUDView: View {
         .onChange(of: store.selectedSection) { _ in store.layoutChanged?() }
         .onChange(of: store.issue) { _ in store.layoutChanged?() }
         .onChange(of: store.cardSeverity) { _ in store.layoutChanged?() }
+        .onChange(of: store.claudeLayoutKey) { _ in store.layoutChanged?() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(store.edgeCollapsed ? "Codex HUD，靠边已收起" : "Codex HUD")
     }
     private var edgeTab: some View {
         Button(action: reveal) {
+            Group {
+                if store.settings.claudeEnabled {
+                    VStack(spacing: 5) {
+                        Text("CX").font(.system(size: 10, weight: .bold))
+                        Text(store.weekly?.remainingPercent.map { "\(Int($0.rounded()))%" } ?? "—").font(.system(size: 11)).monospacedDigit().opacity(store.quotaStale ? 0.45 : 1)
+                        if store.quotaStale { Text("旧").font(.system(size: 8)).foregroundStyle(.orange) }
+                        Circle().fill(store.cardSeverity != .normal ? warningColor : store.issue != nil || !store.waiting.isEmpty ? .orange : .clear).frame(width: 5, height: 5)
+                        Divider().padding(.horizontal, 7)
+                        Text("CL").font(.system(size: 10, weight: .bold)).foregroundStyle(Color(red: 0.86, green: 0.64, blue: 0.51))
+                        Text(store.claude.tabText).font(.system(size: 11)).monospacedDigit().opacity(store.claudeSevenDay == .stale ? 0.45 : 1)
+                        if store.claudeSevenDay == .stale { Text("旧").font(.system(size: 8)).foregroundStyle(.orange) }
+                        Circle().fill(store.claude.marker == "exhausted" ? .red : store.claude.marker == "warning" ? .orange : .clear).frame(width: 5, height: 5)
+                        Image(systemName: store.dockEdge == .left ? "chevron.right" : "chevron.left").font(.system(size: 9))
+                    }.foregroundStyle(.white.opacity(0.85))
+                } else {
             VStack(spacing: 10) {
                 Image(systemName: "circle.hexagongrid").font(.system(size: 15))
                 Text(store.weekly?.remainingPercent.map { "\(Int($0.rounded()))%" } ?? "—")
@@ -57,12 +78,16 @@ struct HUDView: View {
                     Image(systemName: store.dockEdge == .left ? "chevron.right" : "chevron.left")
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
-            }.foregroundStyle(.white.opacity(0.85)).frame(width: 36, height: 108).contentShape(Rectangle())
-        }.buttonStyle(.plain).help("鼠标移入展开；拖离边缘恢复浮窗")
+            }.foregroundStyle(.white.opacity(0.85))
+                }
+            }.frame(width: store.edgeLayout.size.width, height: store.edgeLayout.size.height).contentShape(Rectangle())
+        }.buttonStyle(.plain).help("鼠标移入展开；拖离边缘恢复浮窗" + (store.settings.claudeEnabled ? "；" + store.claude.tooltip : ""))
             .accessibilityLabel("展开 Codex HUD")
     }
     private var fullContent: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 15) {
+            VStack(alignment: .leading, spacing: 15) {
             header
             weekly
             tokenOverview
@@ -86,6 +111,10 @@ struct HUDView: View {
                         .background(warningColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 }.buttonStyle(.plain)
             }
+            if store.settings.claudeEnabled {
+                Divider()
+                claudeSection
+            }
             if let issue = store.issue {
                 HStack(spacing: 5) {
                     Image(systemName: "exclamationmark.circle")
@@ -93,6 +122,9 @@ struct HUDView: View {
                     Spacer()
                 }.font(.system(size: 10)).foregroundStyle(.orange.opacity(0.9))
             }
+            }.background(GeometryReader { geometry in
+                Color.clear.preference(key: HUDChromeHeightKey.self, value: geometry.size.height + 36)
+            })
             if store.expanded {
                 Divider()
                 Picker("详情", selection: $store.selectedSection) {
@@ -106,7 +138,7 @@ struct HUDView: View {
                         case .cards: cardDetails
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
-                }.frame(height: 274)
+                }.frame(height: HUDLayout.detailHeight(available: store.availableHeight, chrome: store.chromeHeight + 90))
                 HStack {
                     Text("只读 · 本机数据").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
@@ -117,6 +149,45 @@ struct HUDView: View {
         }
         .padding(18)
         .frame(width: 340)
+        }
+        .frame(width: 340, height: min(store.availableHeight, store.chromeHeight + (store.expanded ? 90 + HUDLayout.detailHeight(available: store.availableHeight, chrome: store.chromeHeight + 90) : 0)))
+        .onPreferenceChange(HUDChromeHeightKey.self) { height in
+            guard height > 36 else { return } // An absent/collapsed subtree emits the preference default.
+            Task { @MainActor in
+                if abs(height - store.chromeHeight) > 0.5 { store.chromeHeight = height; store.layoutChanged?() }
+            }
+        }
+    }
+    private var claudeSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("✳ CLAUDE").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(red: 0.86, green: 0.64, blue: 0.51))
+                Spacer(minLength: 2)
+                Text(store.claude.message).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            if [.noSnapshot, .failed].contains(store.claudeOverall) {
+                Button("查看接入指南 ›", action: showSettings).buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(.orange)
+            } else {
+                claudeRow("5h", window: store.claude.fiveHour)
+                claudeRow("W", window: store.claude.sevenDay)
+                if store.claude.exhausted { Text("5h 观测为已用尽").font(.system(size: 10)).foregroundStyle(.red).accessibilityLabel("Claude 5 小时额度观测为已用尽") }
+            }
+        }.help("本地状态栏观测；未变化时间不是服务端更新时间。刷新只重读快照。")
+    }
+    private func claudeRow(_ label: String, window: ClaudeWindow?) -> some View {
+        let state = ClaudeWindowState.evaluate(window: window, now: store.claude.now)
+        let remaining = window.map { 100 - $0.usedPercentage } ?? 0
+        let color: Color = remaining <= 5 ? .red : remaining <= 20 ? .orange : Color(red: 0.86, green: 0.64, blue: 0.51)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(label).frame(width: 20, alignment: .leading)
+                ProgressView(value: [.observed, .stale].contains(state) ? remaining : 0, total: 100).tint(color).frame(width: 65)
+                Text(store.claude.remaining(window) + ([.observed, .stale].contains(state) ? " 剩余" : "")).monospacedDigit()
+                Spacer(minLength: 0)
+                if [.observed, .stale].contains(state), let window { Text("Reset " + Display.date(Date(timeIntervalSince1970: Double(window.resetsAt)))).font(.system(size: 9)) }
+            }.font(.system(size: 11))
+            if state != .observed { Text(store.claude.stateText(window)).font(.system(size: 9)).foregroundStyle(.orange) }
+        }.opacity(state == .stale ? 0.5 : 1)
     }
     private var header: some View {
         HStack(spacing: 8) {
@@ -298,10 +369,22 @@ struct SettingsView: View {
     @ObservedObject var loginItem: LoginItem
     @State var value: HUDConfiguration
     @State private var error: String?
+    @State private var existingStatusline = false
+    @State private var originalCommandJSON = ""
+    @State private var originalShell: ClaudeSetup.Shell? = nil
+    @State private var confirmClear = false
+    private var executable: String { store.isPreview ? "/Applications/Codex HUD.app/Contents/MacOS/CodexHUD" : Bundle.main.executablePath ?? "" }
+    private var canCopy: Bool { !store.isPreview && !executable.isEmpty && !ClaudeSetup.isTranslocated(path: executable) }
+    private var generatedWrapper: String? {
+        guard let originalShell else { return nil }
+        return try? ClaudeSetup.wrapperScript(executable: executable, originalCommandJSON: originalCommandJSON, shell: originalShell)
+    }
     var done: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Codex HUD 设置").font(.title3.weight(.semibold))
+            ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("登录时自动启动", isOn: Binding(get: { loginItem.isEnabled }, set: { loginItem.setEnabled($0) }))
                     .disabled(loginItem.isPreview)
@@ -329,6 +412,8 @@ struct SettingsView: View {
                 Text("拖到左右边缘后，移开鼠标收起，移入展开；拖离边缘恢复普通浮窗。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            claudeSetupSection
+            Divider()
             Text("数据连接").font(.system(size: 12, weight: .medium))
             field("Codex 数据目录", text: $value.codexHome, placeholder: "~/.codex")
             field("Codex 可执行文件", text: $value.executable, placeholder: "留空自动查找 Desktop / CLI")
@@ -336,6 +421,8 @@ struct SettingsView: View {
             Toggle("读取 Desktop 本机实时状态（实验接口）", isOn: $value.desktopFeedEnabled)
             Text("如已提供共享 socket，优先读取 app-server 的 thread 状态。实验接口不兼容时显示未验证记录。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack {
                 Button("恢复默认") {
                     value = HUDConfiguration()
@@ -347,8 +434,54 @@ struct SettingsView: View {
                     do { try store.applySettings(value); done() } catch { self.error = error.localizedDescription }
                 }.keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 460).background(Color(nsColor: .windowBackgroundColor))
+        }.padding(24).frame(width: 508, height: min(720, max(0, store.availableHeight - 60))).background(Color(nsColor: .windowBackgroundColor))
+        .alert("清除 Claude 观测？", isPresented: $confirmClear) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) { Task { if !(await store.clearClaude()) { error = "清除失败，请检查权限或稍后重试" } } }
+        } message: { Text("运行中的来源会重建快照。切换账号前先停止旧来源。此操作不修改 Claude 设置。") }
     }
+    private var claudeSetupSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Claude 额度").font(.headline)
+            Toggle("显示 Claude 额度", isOn: windowBinding(\.claudeEnabled))
+            Text("关闭只影响 HUD 显示，不停止桥接记录。彻底断开请手动恢复/移除桥接配置。").font(.caption)
+            Text(store.claude.statusText).font(.caption).foregroundStyle(.secondary)
+            Text(executable).font(.system(size: 9, design: .monospaced)).textSelection(.enabled)
+            if let warning = ClaudeSetup.pathWarning(executable) { Text(warning).font(.caption).foregroundStyle(.orange) }
+            Text("移动或删除 app 后配置会失效；请先自行备份原 statusLine。本工具不读取或修改 Claude 设置，不执行粘贴命令。").font(.caption)
+            Picker("接入方式", selection: $existingStatusline) {
+                Text("我还没有状态栏").tag(false)
+                Text("我已有状态栏").tag(true)
+            }.pickerStyle(.segmented)
+            if existingStatusline {
+                Text("粘贴原 command 的完整 JSON 字符串（包含外层双引号），选择原命令使用的 shell；标准 JSON 解码，仅内存生成。").font(.caption)
+                TextEditor(text: $originalCommandJSON).font(.system(size: 10, design: .monospaced)).frame(height: 64)
+                Picker("原命令 shell", selection: $originalShell) {
+                    Text("请明确选择原命令 shell").tag(ClaudeSetup.Shell?.none)
+                    ForEach(ClaudeSetup.Shell.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
+                }
+                if let script = generatedWrapper {
+                    code(script)
+                    Button("复制组合脚本") { copy(script) }.disabled(!canCopy)
+                } else { Text("请先明确选择 shell，并输入合法的 JSON 字符串；不会自动执行或测试命令。").font(.caption).foregroundStyle(.orange) }
+                Text("保存为你自己的组合脚本后，仅把现有 statusLine.command 改为下方 JSON 字符串；保留 padding、refreshInterval、hideVimModeIndicator 及其他字段。默认保存位置见快速指南。").font(.caption)
+                code(ClaudeSetup.wrapperCommandJSONString)
+                Button("复制 command JSON 字符串") { copy(ClaudeSetup.wrapperCommandJSONString) }.disabled(!canCopy || generatedWrapper == nil)
+                Text("脚本收集 stdin 直到 EOF：此阶段无大小/时间上限，不在桥接 main 的 2 秒预算内；不能保存 NUL。原命令在所选 shell 的独立 -c 上下文运行，继承 cwd/环境。保留原状态栏自己的计时器。仅终止 wrapper 不保证终止后代；真实 Claude 取消语义未验证。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                let snippet = ClaudeSetup.statusLineJSON(command: ClaudeSetup.bridgeCommand(executable: executable))
+                code(snippet)
+                Button("复制最小接入片段") { copy(snippet) }.disabled(!canCopy)
+                Text("只合并 statusLine 字段，保留 Claude 设置其他内容。有已有状态栏时不要使用此替换片段。").font(.caption)
+            }
+            Button("清除 Claude 观测…") { confirmClear = true }
+            Text("断开：先恢复备份的原 command 和其他配置，再删除组合脚本；不要默认删除整个 statusLine。运行中的来源会重建快照，换账号先停旧来源。").font(.caption)
+            Text("排障：Claude Code 首次 API 响应后才可能有额度；需要支持的订阅或 gateway；先信任工作区；组织策略 disableAllHooks / allowManagedHooksOnly 或项目设置可能覆盖状态栏；移动 app 后重新复制；先在 Finder 打开并手动允许（Claude 直接调用的拦截行为未验证）。").font(.caption)
+            Text("本地观测，不是账户实时同步；未变化时间不是服务端时间；刷新仅重读快照，官方未承诺计时器会刷新账户额度。仅一个配置来源，多个来源会混写且不能识别账号；其他设备用量等下次观测才反映；不含 Fable 单独周限额，没有 Claude 重置卡。").font(.caption).foregroundStyle(.secondary)
+        }.fixedSize(horizontal: false, vertical: true)
+    }
+    private func code(_ text: String) -> some View { Text(text).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(8).background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 6)) }
+    private func copy(_ text: String) { guard canCopy else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     private func windowBinding<Value>(_ keyPath: WritableKeyPath<HUDConfiguration, Value>) -> Binding<Value> {
         Binding(get: { store.settings[keyPath: keyPath] }, set: { value in
             var changed = store.settings; changed[keyPath: keyPath] = value

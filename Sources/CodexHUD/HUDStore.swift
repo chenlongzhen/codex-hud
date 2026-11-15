@@ -41,9 +41,27 @@ final class HUDStore: ObservableObject {
     private var lastTokenAttempt = Date.distantPast
     private var generation = 0
     private var lastCardDetails: ResetCredits?
+    let isPreview: Bool
+    @Published var claudeFile: ClaudeFileResult?
+    @Published var availableHeight: CGFloat = 850
+    @Published var chromeHeight: CGFloat = 450
+    private let claudeReader = ClaudeSnapshotReader()
+    private var claudeGeneration = 0
+    private var claudeReading = false
+    private var claudeClearing = false
+    #if DEBUG
+    var claudeReadForTesting: (() async -> ClaudeFileResult)?
+    #endif
+    var claude: ClaudePresentation { ClaudePresentation(file: claudeFile, now: Int64(now.timeIntervalSince1970), enabled: settings.claudeEnabled) }
+    var claudeOverall: ClaudeOverall { claude.overall }
+    var claudeFiveHour: ClaudeWindowState { claude.fiveHourState }
+    var claudeSevenDay: ClaudeWindowState { claude.sevenDayState }
+    var edgeLayout: EdgeTabLayout { settings.claudeEnabled ? .dual : .codexOnly }
+    var claudeLayoutKey: String { "\(settings.claudeEnabled)|\(claude.overall)|\(claude.fiveHourState)|\(claude.sevenDayState)|\(claude.remaining(claude.fiveHour))|\(claude.tabText)|\(claude.exhausted)" }
 
-    init(settings: HUDConfiguration = .load()) {
+    init(settings: HUDConfiguration = .load(), isPreview: Bool = false) {
         self.settings = settings
+        self.isPreview = isPreview
         observer = DesktopObserver(home: settings.homeURL)
         scanner = TokenScanner(home: settings.homeURL)
     }
@@ -88,10 +106,12 @@ final class HUDStore: ObservableObject {
     }
     var menuSummary: String {
         let percent = weekly?.remainingPercent.map { "\(Int($0.rounded()))%" } ?? "—"
-        return "W \(percent)  ·  ●\(tasksAvailable ? String(running.count) : "—")  ◉\(tasksAvailable ? String(waiting.count) : "—")\(issue != nil || cardSeverity != .normal ? " !" : "")"
+        return "W \(percent)  ·  ●\(tasksAvailable ? String(running.count) : "—")  ◉\(tasksAvailable ? String(waiting.count) : "—")\(issue != nil || cardSeverity != .normal ? " !" : "")" + (settings.claudeEnabled ? " · " + claude.menu : "")
     }
 
     func start() {
+        guard !isPreview else { return }
+        Task { await readClaude() }
         wireCallbacks()
         observerRefresh()
         Task { await connect() }
@@ -101,7 +121,8 @@ final class HUDStore: ObservableObject {
         }
     }
     func stop() {
-        generation += 1; timer?.invalidate(); timer = nil; rpc.stop(); observer.stop()
+        generation += 1; claudeGeneration += 1; claudeFile = nil
+        timer?.invalidate(); timer = nil; rpc.stop(); observer.stop()
     }
     private func wireCallbacks() {
         let current = generation
@@ -128,6 +149,7 @@ final class HUDStore: ObservableObject {
     private func tick() {
         now = Date(); tickCount += 1
         if tickCount % 5 == 0 {
+            Task { await readClaude() }
             if !serverConnected && !connecting { Task { await connect() } }
             observerRefresh()
             if settings.socketPath != nil { Task { await readSharedTasks() } }
@@ -159,6 +181,8 @@ final class HUDStore: ObservableObject {
         }
     }
     func refresh() {
+        guard !isPreview else { return }
+        Task { await readClaude() }
         observerRefresh()
         Task {
             let current = generation
@@ -260,23 +284,57 @@ final class HUDStore: ObservableObject {
         }
         summaryChanged?()
     }
+    func readClaude() async {
+        var permitted = !isPreview
+        #if DEBUG
+        permitted = permitted || claudeReadForTesting != nil
+        #endif
+        guard permitted, settings.claudeEnabled, !claudeReading, !claudeClearing else { return }
+        claudeReading = true
+        let current = claudeGeneration
+        let result: ClaudeFileResult
+        #if DEBUG
+        if let read = claudeReadForTesting { result = await read() }
+        else { result = await claudeReader.read(now: Int64(now.timeIntervalSince1970)) }
+        #else
+        result = await claudeReader.read(now: Int64(now.timeIntervalSince1970))
+        #endif
+        claudeReading = false
+        guard current == claudeGeneration, settings.claudeEnabled, !claudeClearing else { return }
+        claudeFile = result; summaryChanged?()
+    }
+    func clearClaude() async -> Bool {
+        claudeGeneration += 1; claudeFile = nil
+        guard !isPreview else { return true }
+        guard !claudeClearing else { return false }
+        claudeClearing = true
+        defer { claudeClearing = false }
+        return await claudeReader.clear()
+    }
     func show(_ section: DetailSection) {
+        Task { await readClaude() }
         selectedSection = section; expanded = true; layoutChanged?()
     }
-    func toggleDetails() { expanded.toggle(); layoutChanged?() }
+    func toggleDetails() { expanded.toggle(); Task { await readClaude() }; layoutChanged?() }
     func applyWindowSettings(_ value: HUDConfiguration) throws {
         var updated = settings
         updated.transparency = min(0.8, max(0, value.transparency))
         updated.alwaysOnTop = value.alwaysOnTop
         updated.edgeCollapseEnabled = value.edgeCollapseEnabled
-        try updated.save()
+        updated.claudeEnabled = value.claudeEnabled
+        if !isPreview { try updated.save() }
+        let changedClaude = settings.claudeEnabled != updated.claudeEnabled
+        if changedClaude { claudeGeneration += 1; claudeFile = nil }
         settings = updated
-        windowSettingsChanged?()
+        if changedClaude && updated.claudeEnabled { Task { await readClaude() } }
+        windowSettingsChanged?(); summaryChanged?()
     }
     func applySettings(_ value: HUDConfiguration) throws {
         var value = value
         value.transparency = settings.transparency; value.alwaysOnTop = settings.alwaysOnTop
         value.edgeCollapseEnabled = settings.edgeCollapseEnabled
+        value.claudeEnabled = settings.claudeEnabled
+        if isPreview { settings = value; claudeGeneration += 1; return }
         try value.save(); stop(); settings = value
         rpc = AppServer(); observer = DesktopObserver(home: value.homeURL); scanner = TokenScanner(home: value.homeURL)
         quota = nil; quotaUpdatedAt = nil; tokenReport = nil; tokenError = nil; quotaError = nil
@@ -287,6 +345,7 @@ final class HUDStore: ObservableObject {
         start()
     }
     func openCodex(thread: String? = nil) {
+        guard !isPreview else { return }
         if let thread, UUID(uuidString: thread) != nil, let url = URL(string: "codex://threads/\(thread)"), NSWorkspace.shared.open(url) { return }
         for path in ["/Applications/Codex.app", "/Applications/ChatGPT.app"] where FileManager.default.fileExists(atPath: path) {
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: .init()); return

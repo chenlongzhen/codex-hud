@@ -1,5 +1,21 @@
 # Security review — initial public release
 
+## 2026-11-15 Claude observation extension (local candidate)
+
+This section is a scoped implementation record, not a new independent security certification. Historical claims below describe the original release, not real-account tests in this change.
+
+- The native bridge is selected before NSApplication and HUDStore. No Claude command execution, network API, credential/keychain/cookie access or real Claude-settings read/write is added. Only percentages and integer timestamps are retained; cwd/session/workspace fields are dropped.
+- Home comes from getpwuid, not HOME. Default and explicit test paths are walked component by component using openat(O_DIRECTORY|O_NOFOLLOW); directory/file owner, type and permissions are checked by fd. Existing objects are never silently chmodded. Only successful mkdirat/new O_EXCL creations have permissions corrected (including umask 0777).
+- Snapshot IO uses directory-relative no-follow opens, capped nonblocking reads, a stable .lock, bounded flock retry, exclusive random temporary creation, complete writes/fsync and renameat. renameat takes no no-follow flags. Cleanup uses fstatat(AT_SYMLINK_NOFOLLOW)/unlinkat, exact PID/8-hex basenames, at most 512 examined entries and 16 removals. Clear uses the same lock and never deletes it.
+- All decoded and encoded timestamps are bounded. Future observations on clock rollback are preserved rather than emitting self-invalid files. Expired windows remain evidence until replaced/cleared. Corrupt reads clear display numbers. A malicious same-UID program with arbitrary control of private directories is outside this boundary.
+- Process watchdog and stdin deadlines use monotonic time. Valid stdin stdout does not depend on persistence; short writes/EINTR, EPIPE/SIGPIPE and closed stdout are handled. The 2s main budget assumes scheduling, excludes loader time and does not promise behavior under SIGKILL/crash/freeze or atomic output on arbitrary fds.
+- Store uses generation tokens, enabled rechecks and a single outstanding read. Disable/clear/preview lifecycle invalidates pending results. Preview/check modes do not load real settings, read default snapshots, write configuration, clear the real directory, change login items or connect/reconnect data sources. Preview copy actions are disabled too.
+- Existing-statusline support is a pure text generator using standard JSON decoding and explicit user-selected shell. HUD never executes the pasted string. The user-saved wrapper runs the original command in an independent shell -c context; inherited privileges and original logging remain the user's trust boundary. Input waits for EOF in memory with no wrapper size/time bound and cannot preserve NUL. Group SIGTERM is synthetic-tested; wrapper-only termination and actual Claude cancellation are not guaranteed. Backup/restore original command and configuration before removing the wrapper; retain other statusLine fields/timers.
+- The local package includes the project MIT LICENSE; no third-party implementation code or package dependency was added. Packaging resolves/rejects unsafe/nonempty/install destinations before writing, restricts this candidate to a private temporary boundary, verifies actual Mach-O minimum OS, arm64 and system-only dependencies, extracts and self-tests. Ad-hoc signature only; no notarization, install, publication, quarantine removal or security bypass.
+
+Tests and explicit unverified items are recorded in [VALIDATION.md](VALIDATION.md). The prior Codex account RPC whitelist, token scanner and task data semantics are unchanged.
+
+
 Reviewed on 2026-10-04. **No unresolved critical or high-severity issue was identified in the reviewed scope.** Publication privacy and local-input robustness findings were fixed before the first public commit. This is a source and artifact review with targeted regression tests, not an independent penetration test or a guarantee against vulnerabilities.
 
 Scope: Swift/SwiftUI/AppKit code, local subprocess and Unix-socket boundaries, read-only SQLite/session access, settings, diagnostics, shell build helpers, documentation and release artifacts. The security workflow used did not provide a Swift-specific checklist; the review therefore used direct code inspection and the platform reference cited below.

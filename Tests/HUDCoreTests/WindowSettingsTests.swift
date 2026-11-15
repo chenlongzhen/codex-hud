@@ -6,6 +6,9 @@ func testWindowPreferencesPersistAndOldSettingsKeepTheirConnection() throws {
     let previous = try JSONDecoder().decode(HUDConfiguration.self, from: old)
     let defaults = try JSONSerialization.jsonObject(with: JSONEncoder().encode(previous)) as! [String: Any]
     expectEqual(previous.codexHome, "/example/codex")
+    expectEqual(previous.claudeEnabled, true)
+    var disabled = previous; disabled.claudeEnabled = false
+    expectEqual(try JSONDecoder().decode(HUDConfiguration.self, from: JSONEncoder().encode(disabled)).claudeEnabled, false)
     expectEqual(defaults["transparency"] as? Double, 0)
     expectEqual(defaults["alwaysOnTop"] as? Bool, true)
     expectEqual(defaults["edgeCollapseEnabled"] as? Bool, true)
