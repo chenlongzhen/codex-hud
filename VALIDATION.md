@@ -1,6 +1,17 @@
 # Validation record
 
-## 2026-11-15: active official-CLI polling increment
+## 2026-11-16: HTTP(S) proxy timeout fix
+
+- Reproduced the installed, previously validated binary: **30.817s timeout**, no quota returned, no remaining child group. Its binary hash matched the accepted artifact; this was not an outdated installation.
+- Controlled diagnostic copy with only the existing loopback HTTP proxy added: **3.128s rateLimited**, not quota success. The retry-after was respected.
+- Fixed Debug binary with **all shell proxy variables removed**, simulating Finder environment: **success**, both windows and reset timestamps parsed via system proxy, **5.666s executor / 7.216s whole launch**, stderr empty, no remaining child group. Snapshot dry-run; probe session file metadata unchanged; no credentials or transcript contents read.
+- Core regression: **804 behavior assertions passed** after correcting explicit-port overflow and malformed IPv6/host rejection found in focused review. Includes proxy precedence, Finder fallback, rejected schemes/credentials/components, bypass normalization, bootstrap reconstruction and exact child environment with credential variables excluded. Debug application build passed.
+- Debug window40, Release probe19 (including exact proxy forwarding), bridge28, fixture11+native25 and five synthetic renders passed. Release packaging, strict ad-hoc signature, architecture/dependency and extraction checks passed. Focused independent source review passed after R1/R2 correction: 184 isolated pure-function assertions, no remaining blockers within that review scope; the full matrix and package/real-account checks were performed by the lead. No installation, commit/push or publication in this fix.
+- Final Release app extracted from the rebuilt candidate also passed the real dry-run with all shell proxy variables removed: **5.519s executor / 5.550s whole launch**, both windows/reset timestamps present, empty stderr, no remaining group, probe session metadata unchanged. No snapshot written. Final candidate SHA-256: `06b36a86e963adbd63756a0c5c3353bc2486ba3c5f07b3053a3ff2e2faccdc50`.
+
+Actual account percentages stay out of public fixtures/docs. HTTP(S) routing is supported; PAC, auto-discovery, SOCKS-only and credential-bearing proxy URLs are not. This single-machine success does not establish every proxy/OS/CLI combination or all-day reliability.
+
+## Historical: 2026-11-15 active official-CLI polling increment
 
 Implementation by Astra after the original execution agent failed and the user approved takeover. No install/overwrite, commit/push or publication. The following results are from this increment; historical sections below are not rerun claims.
 

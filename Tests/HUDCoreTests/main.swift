@@ -47,6 +47,7 @@ try await testOversizedSessionLineIsSkippedAndScanningRecovers()
 try await testOversizedCompleteRPCResponseFailsBeforeDecoding()
 try testClaudeQuotaContracts()
 claudeUsageTests()
+testClaudeProxyConfiguration()
 #if DEBUG
 try testClaudeSnapshotFiles()
 try testClaudeProbeExecutionAndSchedule()

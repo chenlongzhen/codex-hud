@@ -143,7 +143,7 @@ HUD 启动自己使用的 Codex app-server，通过 [官方 `account/rateLimits/
 
 ### Claude 本地观测（默认开启显示，可关闭）
 
-主动查询默认每15分钟通过 PTY 运行官方 Claude Code `/usage`，失败退避，睡眠暂停、唤醒至少等待30秒；找不到 CLI、需要登录或不支持的账户会停止自动重试。只解析5h和全模型周窗口，原始终端输出不落盘。低电量模式延长间隔。主动模式可单独关闭。
+主动查询默认每15分钟通过 PTY 运行官方 Claude Code `/usage`，失败退避，睡眠暂停、唤醒至少等待30秒；找不到 CLI、需要登录或不支持的账户会停止自动重试。只解析5h和全模型周窗口，原始终端输出不落盘。低电量模式延长间隔。主动模式可单独关闭。查询使用启动环境的 HTTP(S) 代理，或回退到 macOS 系统静态 HTTP(S) 代理（适用于 Finder 启动）；仅 PAC/自动发现/SOCKS 及带认证信息的代理 URL 暂不支持，设置页显示来源但不展示地址。
 
 可选使用[官方 statusline stdin](https://code.claude.com/docs/en/statusline.md) 的 `rate_limits.five_hour` / `seven_day` 被动桥接，通常首次 API 响应后才有字段。桥接本身仍离线且不启动子进程。两个来源都只保存百分比与有界时间，HUD 每5秒读取快照；手动刷新只是重读。HUD 不读取凭据/钥匙串/cookie，官方 CLI 自身的登录与网络行为另计。
 

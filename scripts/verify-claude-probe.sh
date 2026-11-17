@@ -58,7 +58,7 @@ exe=work/'fake-claude'
 subprocess.run(['/usr/bin/clang','-O0',str(source),'-o',str(exe)],check=True,capture_output=True)
 exe.chmod(0o700)
 base=[str(binary),'--probe-claude-once','--claude-executable',str(exe),'--claude-snapshot-dir',str(work/'snap'),'--claude-probe-dir',str(work/'cwd')]
-env=dict(os.environ,CLAUDECODE='injected',CLAUDE_CODE_FOO='injected',ANTHROPIC_API_KEY='synthetic-not-a-key')
+env=dict(os.environ,CLAUDECODE='injected',CLAUDE_CODE_FOO='injected',ANTHROPIC_API_KEY='synthetic-not-a-key',https_proxy='http://127.0.0.1:19877',no_proxy='.example.invalid')
 def mode(name): (work/'mode').write_text(name)
 def run(name, extra=('--dry-run',), timeout=40):
     mode(name); r=subprocess.run(base+list(extra),capture_output=True,env=env,timeout=timeout)
@@ -83,7 +83,9 @@ try:
     fields=list(map(int,(work/'ready').read_text().split()))
     check('controlling_terminal_private_group_no_fds',fields[0]==fields[1] and fields[2:]==[1,0])
     keys={x.split(b'=',1)[0].decode() for x in (work/'environment').read_bytes().split(b'\0') if x}
-    check('exact_environment_whitelist',keys=={'HOME','USER','LOGNAME','PATH','TERM','LANG','COLUMNS','LINES','DISABLE_AUTOUPDATER'})
+    check('exact_environment_whitelist',keys=={'HOME','USER','LOGNAME','PATH','TERM','LANG','COLUMNS','LINES','DISABLE_AUTOUPDATER','HTTPS_PROXY','NO_PROXY'})
+    child_env=dict(x.split(b'=',1) for x in (work/'environment').read_bytes().split(b'\0') if x)
+    check('proxy_forwarded_without_credential_variables',child_env[b'HTTPS_PROXY']==b'http://127.0.0.1:19877' and child_env[b'NO_PROXY']==b'.example.invalid')
     check('normal_no_descendants',not live_group(d['childPid']))
     r,d=run('success',extra=())
     snap=json.loads((work/'snap/snapshot.json').read_bytes())

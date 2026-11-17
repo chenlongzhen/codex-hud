@@ -1,5 +1,13 @@
 # Security review — initial public release
 
+## 2026-11-16 proxy timeout fix
+
+The prior environment allowlist dropped the machine's HTTP proxy, so the validated binary now timed out on this user's current network. A controlled copy differing only by the existing unauthenticated loopback HTTP proxy returned a rate-limit response instead; a subsequent fixed build, after retry-after and with shell proxy variables removed, successfully parsed both windows through the macOS system proxy. This is an actual single-machine dry-run, not a guarantee for all proxy configurations.
+
+`ClaudeProxyConfiguration` reads the public CFNetwork system-proxy dictionary, not Claude settings or credential stores. It selects documented HTTP(S) environment variables first, otherwise a static macOS HTTP(S) proxy, and normalizes only `HTTPS_PROXY` / `NO_PROXY` into the child allowlist. The bootstrap revalidates those normalized values without re-reading system state. Claude/API-key variables, custom CA paths and TLS-verification-disable variables are still not forwarded. URLs with userinfo, invalid hosts/ports/control characters or unexpected components are rejected; PAC is not downloaded/evaluated and SOCKS-only/auto-discovery setups fail visibly rather than silently switching to direct. No raw proxy URL enters report/UI/logging. Common system bypass entries are passed through (`*.domain` becomes `.domain`); full PAC routing and every advanced platform-specific exception are not implemented. Existing system routing is reused, not configured or changed.
+
+Reference: [official Claude proxy documentation](https://code.claude.com/docs/en/network-config.md#proxy-configuration). The fake child receives synthetic proxy values to test the exact expanded allowlist without using real network configuration.
+
 ## 2026-11-15 active CLI polling increment (local candidate)
 
 This is an implementation/test record, not a completed independent security certification. Active polling is enabled by default, including upgrades; the first-launch notice and settings toggle disclose it. This section supersedes historical statements below that no Claude subprocess is started.

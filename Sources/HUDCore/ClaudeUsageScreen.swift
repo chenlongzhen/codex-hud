@@ -189,9 +189,10 @@ public struct ClaudeUsageScreen {
 public enum ClaudeProbeStatus: String, Codable, CaseIterable {
     case success, trustPrompt, trustFailed, loginRequired, notSubscription, rateLimited, timeout, parseFailed, loading
     case outputOverflow, notFound, untrustedExecutable, needsNode, probeDirNotEmpty, probeDirUntrusted, busy, spawnFailed, cancelled
+    case invalidProxy, unsupportedProxy
     /// Statuses that stop automatic retries until the user acts (B5/M8).
     public var stopsAutomaticRetry: Bool {
-        [.trustPrompt, .trustFailed, .loginRequired, .notSubscription, .notFound, .untrustedExecutable, .needsNode, .probeDirNotEmpty, .probeDirUntrusted].contains(self)
+        [.trustPrompt, .trustFailed, .loginRequired, .notSubscription, .notFound, .untrustedExecutable, .needsNode, .probeDirNotEmpty, .probeDirUntrusted, .invalidProxy, .unsupportedProxy].contains(self)
     }
     public var text: String {
         switch self {
@@ -201,7 +202,9 @@ public enum ClaudeProbeStatus: String, Codable, CaseIterable {
         case .loginRequired: return "需要登录：请在终端运行 claude 并登录"
         case .notSubscription: return "当前登录不是订阅账户（或为 API key），/usage 不提供额度"
         case .rateLimited: return "被限流"
-        case .timeout: return "查询超时"
+        case .timeout: return "查询超时，请检查网络/HTTP(S)代理"
+        case .invalidProxy: return "代理配置无效或包含认证信息，请检查 HTTP(S) 代理"
+        case .unsupportedProxy: return "不支持仅 PAC/SOCKS/自动发现的代理，请配置 HTTP(S) 代理"
         case .parseFailed, .loading: return "无法解析 /usage 输出"
         case .outputOverflow: return "输出异常"
         case .notFound: return "未找到 claude（未安装或路径不同）"

@@ -87,7 +87,7 @@ public final class ClaudeProbe: @unchecked Sendable {
         }
         return nil
     }
-    private static func environment(executable: String, config: String?) -> [String: String]? {
+    private static func environment(executable: String, config: String?, network: [String: String]) -> [String: String]? {
         guard let identity else { return nil }
         let dir = URL(fileURLWithPath: executable).deletingLastPathComponent().path
         var path = "/usr/bin:/bin:/usr/sbin:/sbin:\(dir)"
@@ -109,6 +109,7 @@ public final class ClaudeProbe: @unchecked Sendable {
             guard config.hasPrefix("/"), !config.utf8.contains(0) else { return nil }
             env["CLAUDE_CONFIG_DIR"] = config
         }
+        for key in ["HTTPS_PROXY", "NO_PROXY"] { if let value = network[key] { env[key] = value } }
         return env
     }
     /// Detect is an explicit user action: login shell startup files may execute. Never used automatically.
@@ -149,7 +150,8 @@ public final class ClaudeProbe: @unchecked Sendable {
         // Foundation may add __CF_USER_TEXT_ENCODING during bootstrap. Rebuild envp from
         // the same whitelist, rather than passing the bootstrap's modified environment on.
         let inherited = ProcessInfo.processInfo.environment
-        guard let env = environment(executable: executable, config: inherited["CLAUDE_CONFIG_DIR"]) else { _exit(126) }
+        let network = ClaudeProxyConfiguration.resolve(environment: inherited, system: [:])
+        guard network.failure == nil, let env = environment(executable: executable, config: inherited["CLAUDE_CONFIG_DIR"], network: network.variables) else { _exit(126) }
         let argumentStrings: [String] = [executable, "--safe-mode", "--strict-mcp-config", "/usage"]
         let argv = argumentStrings.map { strdup($0) }
         let envp = env.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") }
@@ -171,7 +173,9 @@ public final class ClaudeProbe: @unchecked Sendable {
         guard let executable = Self.findExecutable(override: options.executable) else {
             return report(options.executable?.isEmpty == false ? .untrustedExecutable : .notFound)
         }
-        guard let env = Self.environment(executable: executable, config: options.configDirectory) else { return report(.needsNode) }
+        let network = ClaudeProxyConfiguration.current()
+        if let failure = network.failure { return report(failure) }
+        guard let env = Self.environment(executable: executable, config: options.configDirectory, network: network.variables) else { return report(.needsNode) }
         let lock: Int32
         do { guard let fd = try ClaudeSnapshotFile.acquireProbeLock(directory: options.snapshotDirectory) else { return report(.busy) }; lock = fd }
         catch { return report(.probeDirUntrusted) }

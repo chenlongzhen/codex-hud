@@ -44,6 +44,12 @@ func testClaudeProbeExecutionAndSchedule() throws {
     let options = ClaudeProbe.Options(executable: exe.path, snapshotDirectory: root.appendingPathComponent("snapshot").path, probeDirectory: root.appendingPathComponent("cwd").path)
     try mode("success")
     setenv("CLAUDECODE", "test-injected", 1); setenv("ANTHROPIC_API_KEY", "test-not-a-key", 1); setenv("CLAUDE_CODE_FOO", "test-injected", 1)
+    let oldProxy = ProcessInfo.processInfo.environment["https_proxy"], oldBypass = ProcessInfo.processInfo.environment["no_proxy"]
+    setenv("https_proxy", "http://127.0.0.1:19877", 1); setenv("no_proxy", ".example.invalid", 1)
+    defer {
+        if let oldProxy { setenv("https_proxy", oldProxy, 1) } else { unsetenv("https_proxy") }
+        if let oldBypass { setenv("no_proxy", oldBypass, 1) } else { unsetenv("no_proxy") }
+    }
     let leakedFD = open(root.appendingPathComponent("should-not-leak").path, O_CREAT | O_RDWR, 0o600)
     let runner = ClaudeProbe(timeout: 1.5, grace: 0.1)
     let success = runner.run(options)
@@ -55,7 +61,9 @@ func testClaudeProbeExecutionAndSchedule() throws {
     let env = info["env"] as! [String: String]
     // Foundation may add this one platform variable after exec; the process-level C helper
     // separately checks the exact initial envp before loading Foundation.
-    expectEqual(Set(env.keys).subtracting(["__CF_USER_TEXT_ENCODING"]), Set(["HOME", "USER", "LOGNAME", "PATH", "TERM", "LANG", "COLUMNS", "LINES", "DISABLE_AUTOUPDATER"]))
+    expectEqual(Set(env.keys).subtracting(["__CF_USER_TEXT_ENCODING"]), Set(["HOME", "USER", "LOGNAME", "PATH", "TERM", "LANG", "COLUMNS", "LINES", "DISABLE_AUTOUPDATER", "HTTPS_PROXY", "NO_PROXY"]))
+    expectEqual(env["HTTPS_PROXY"], "http://127.0.0.1:19877")
+    expectEqual(env["NO_PROXY"], ".example.invalid")
     expectEqual(env["DISABLE_AUTOUPDATER"], "1")
     expectEqual(info["fds"] as? [Int], [])
     expectEqual(info["tty"] as? Bool, true)

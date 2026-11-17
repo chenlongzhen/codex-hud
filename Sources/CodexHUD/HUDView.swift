@@ -475,6 +475,8 @@ struct SettingsView: View {
                 Button("立即查询") { store.requestClaudeProbe(manual: true) }.disabled(!store.canProbeClaude)
             }
             Text(store.claudeProbeText).font(.caption).foregroundStyle(.secondary)
+            Text(ClaudeProxyConfiguration.current().summary).font(.caption).foregroundStyle(.secondary)
+            Text("使用启动环境或 macOS 系统 HTTP(S) 代理；不执行 PAC、不使用 SOCKS，不转发含账号密码的代理 URL。").font(.caption).foregroundStyle(.secondary)
             Text("默认开启；启动/开启后 10 秒首查，失败退避。使用安全模式执行 /usage，不发送模型请求；HUD 不读取凭据，官方 CLI 仍会使用登录信息并联网。首次仅自动信任 HUD 的空私有目录。检测路径在常见位置无结果时会运行登录 shell（其启动文件可能执行）。").font(.caption).foregroundStyle(.secondary)
             Divider()
             Text("可选：状态栏被动桥接").font(.subheadline)
